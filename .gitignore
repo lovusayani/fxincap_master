@@ -1,0 +1,58 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+pm2-logs/
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+coverage/
+.next/
+.turbo/
+
+# Temp/work files
+.tmp*/
+tmp/
+*.tmp
+*.tar.gz
+*.zip
+staging-release/
+
+# Runtime uploads/cache
+uploads/**
+!uploads/.gitkeep
+fxincapapi/uploads/**
+!fxincapapi/uploads/.gitkeep
+fxincaptrade/uploads/**
+!fxincaptrade/uploads/.gitkeep
+
+# Local test helpers
+test-order.mjs
+fxincapapi/test-fixes.mjs
+fxincapapi/test-order.mjs
+fxincapapi/test-trade.mjs
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/

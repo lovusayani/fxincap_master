@@ -1,0 +1,21 @@
+{
+  "name": "admin.fxincap.com",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "pnpm --filter ./client run dev",
+    "dev:legacy": "concurrently \"pnpm:dev:server\" \"pnpm:dev:client\"",
+    "dev:server": "pnpm --filter ./server run dev",
+    "dev:client": "pnpm --filter ./client run dev",
+    "build": "pnpm --filter ./client run build",
+    "start": "NODE_ENV=production pnpm --filter ./server run start",
+    "start:prod": "pnpm run build && pnpm run start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

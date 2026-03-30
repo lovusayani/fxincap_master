@@ -1,0 +1,12 @@
+{
+  "watch": ["client", "server"],
+  "ext": "ts,tsx,js,jsx,json",
+  "ignore": [
+    "node_modules",
+    "dist",
+    "*.test.ts",
+    "*.test.tsx"
+  ],
+  "delay": "1000",
+  "exec": "npm run build && pm2 restart suimfx-terminal"
+}

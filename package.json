@@ -1,0 +1,12 @@
+{
+  "scripts": {
+    "dev:all": "powershell -ExecutionPolicy Bypass -File ./dev-all.ps1 start",
+    "dev:all:start": "powershell -ExecutionPolicy Bypass -File ./dev-all.ps1 start",
+    "dev:all:stop": "powershell -ExecutionPolicy Bypass -File ./dev-all.ps1 stop",
+    "dev:all:restart": "powershell -ExecutionPolicy Bypass -File ./dev-all.ps1 restart",
+    "dev:all:status": "powershell -ExecutionPolicy Bypass -File ./dev-all.ps1 status"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3"
+  }
+}

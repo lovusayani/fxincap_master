@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FxIncap - Forex Trading Platform</title>
+    <link rel="icon" type="image/png" href="/fxincapLogo.jpeg" />
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+      body { line-height: 1.5; }
+      #root { width: 100%; height: 100%; display: flex; flex-direction: column; }
+      input, button, select, textarea { color: inherit; font-family: inherit; }
+      button { cursor: pointer; }
+      a { color: inherit; text-decoration: none; }
+    </style>
+    <script>
+      try {
+        const theme = localStorage.getItem('theme') || 'dark';
+        if (theme === 'dark') document.documentElement.classList.add('dark');
+      } catch {}
+      window.addEventListener('error', (e) => {
+        const el = document.getElementById('runtime-error') || document.createElement('pre');
+        el.id = 'runtime-error';
+        el.style.position = 'fixed';
+        el.style.top = '8px';
+        el.style.right = '8px';
+        el.style.maxWidth = '90vw';
+        el.style.zIndex = '99999';
+        el.style.background = 'rgba(220,38,38,0.9)';
+        el.style.color = '#fff';
+        el.style.padding = '10px 12px';
+        el.style.borderRadius = '8px';
+        el.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+        el.textContent = 'Runtime error: ' + e.message + '\n' + (e.error && e.error.stack ? e.error.stack : '');
+        document.body.appendChild(el);
+      });
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+
+    <script type="module" src="/client/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,29 @@
+---
+alwaysApply: true
+---
+# Project AI preferences
+
+- Use minimal tokens.
+- Output code only unless the user asks for prose, explanation, or discussion.
+- Keep responses short.
+- Do not explain unless necessary (correctness, safety, or ambiguity).
+- Prefer simple, efficient solutions.
+
+## Prompt template file
+
+Use the tier that matches the task when choosing a model and starting a chat:
+
+### Cheap task
+
+- **Model:** Gemini Flash  
+- **Prompt:** Minimal code. No explanation.
+
+### Medium task
+
+- **Model:** Composer 2  
+- **Prompt:** Production-ready minimal code.
+
+### Complex task
+
+- **Model:** GPT-5.4  
+- **Prompt:** Deep analysis and fix.

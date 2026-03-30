@@ -1,0 +1,14 @@
+<type>(<scope>): <short summary>
+
+# Types:
+# feat, fix, refactor, chore, docs, test, build, ci
+#
+# Body (optional):
+# Why:
+# -
+#
+# What changed:
+# -
+#
+# Validation:
+# -
