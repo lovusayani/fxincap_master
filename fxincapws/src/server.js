@@ -318,18 +318,28 @@ app.post('/webhook/finnhub', (req, res) => {
 // Admin endpoints
 app.get('/admin/providers', async (req, res) => {
   const token = req.headers['x-admin-token'] || req.query.token;
-  if (token !== ADMIN_TOKEN) return res.status(401).json({ success: false, error: 'Unauthorized' });
+  if (token !== ADMIN_TOKEN) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized — ADMIN_TOKEN on fxincap-ws must match WS_ADMIN_TOKEN on the admin server',
+    });
+  }
   try {
     const providers = await getAllProviders();
     res.json({ success: true, providers });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(503).json({ success: false, error: e.message || 'Database error', providers: [] });
   }
 });
 
 app.post('/admin/providers/:provider', async (req, res) => {
   const token = req.headers['x-admin-token'] || req.query.token;
-  if (token !== ADMIN_TOKEN) return res.status(401).json({ success: false, error: 'Unauthorized' });
+  if (token !== ADMIN_TOKEN) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized — ADMIN_TOKEN on fxincap-ws must match WS_ADMIN_TOKEN on the admin server',
+    });
+  }
 
   const { provider: p } = req.params;
   const { api_key, enabled } = req.body || {};

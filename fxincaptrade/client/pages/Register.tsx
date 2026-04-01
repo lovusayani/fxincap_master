@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import PlatformLogo from "@/components/PlatformLogo";
+import { apiUrl } from "@/lib/api";
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const upperRegex = /[A-Z]/;
@@ -64,7 +65,7 @@ export default function RegisterPage() {
 
             const checkVerificationStatus = async () => {
                 try {
-                    const res = await fetch("/api/auth/verification-status", {
+                    const res = await fetch(apiUrl("/api/auth/verification-status"), {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ email: requestedEmail }),
@@ -112,7 +113,7 @@ export default function RegisterPage() {
 
         const pollVerificationStatus = async () => {
             try {
-                const res = await fetch("/api/auth/verification-status", {
+                const res = await fetch(apiUrl("/api/auth/verification-status"), {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ email }),
@@ -176,7 +177,7 @@ export default function RegisterPage() {
         setLoading(true);
         setError("");
         try {
-            const res = await fetch("/api/auth/register", {
+            const res = await fetch(apiUrl("/api/auth/register"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ firstName, lastName, email, password }),
@@ -209,7 +210,7 @@ export default function RegisterPage() {
         setError("");
         setSuccessMessage("");
         try {
-            const res = await fetch("/api/auth/verify-email", {
+            const res = await fetch(apiUrl("/api/auth/verify-email"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, code: verificationCode.trim() }),
@@ -243,7 +244,7 @@ export default function RegisterPage() {
         setError("");
         setSuccessMessage("");
         try {
-            const res = await fetch("/api/auth/verify-later", {
+            const res = await fetch(apiUrl("/api/auth/verify-later"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email }),
@@ -330,7 +331,7 @@ export default function RegisterPage() {
         setError("");
         setSuccessMessage("");
         try {
-            const res = await fetch("/api/auth/resend-verification", {
+            const res = await fetch(apiUrl("/api/auth/resend-verification"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email }),

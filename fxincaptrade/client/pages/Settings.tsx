@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "@/components/Header";
+import { apiUrl } from "@/lib/api";
 import { useTradingStore } from "@/state/trading-store";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -91,8 +92,8 @@ export default function SettingsPage() {
 
   const loadModeAccounts = async () => {
     const [demoRes, realRes] = await Promise.all([
-      fetch("/api/user/balance?mode=demo", { headers: authHeaders }),
-      fetch("/api/user/balance?mode=real", { headers: authHeaders }),
+      fetch(apiUrl("/api/user/balance?mode=demo"), { headers: authHeaders }),
+      fetch(apiUrl("/api/user/balance?mode=real"), { headers: authHeaders }),
     ]);
 
     const nextDemo = demoRes.ok
@@ -108,8 +109,8 @@ export default function SettingsPage() {
   const loadActivationContext = async () => {
     try {
       const [settingsRes, kycRes] = await Promise.all([
-        fetch("/api/user/account-activation-settings", { headers: authHeaders }),
-        fetch("/api/user/kyc", { headers: authHeaders }),
+        fetch(apiUrl("/api/user/account-activation-settings"), { headers: authHeaders }),
+        fetch(apiUrl("/api/user/kyc"), { headers: authHeaders }),
       ]);
 
       if (settingsRes.ok) {
@@ -148,7 +149,7 @@ export default function SettingsPage() {
     setSwitching(true);
     setMessage(null);
     try {
-      const res = await fetch("/api/user/trading-mode", {
+      const res = await fetch(apiUrl("/api/user/trading-mode"), {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({ tradingMode: mode, mode }),
@@ -210,7 +211,7 @@ export default function SettingsPage() {
     setMessage({ ok: true, text: "Your real account is being activated, please wait..." });
 
     try {
-      const res = await fetch("/api/user/activate-real-account", {
+      const res = await fetch(apiUrl("/api/user/activate-real-account"), {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders },
       });

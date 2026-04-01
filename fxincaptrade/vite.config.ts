@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
+/** Dev proxy target when the browser uses same-origin `/api` (VITE_API_URL unset in the client). */
 const apiTarget = process.env.VITE_API_URL || "http://localhost:7000";
 
 export default defineConfig(() => ({

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import Header from "@/components/Header";
+import { apiUrl } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -29,7 +30,7 @@ export default function WithdrawPage() {
         const token = localStorage.getItem("auth_token");
 
         try {
-            const response = await fetch("/api/user/fund-request", {
+            const response = await fetch(apiUrl("/api/user/fund-request"), {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",

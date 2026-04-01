@@ -9,6 +9,7 @@ import { AssetCard } from "@/components/dashboard/AssetCard";
 import { PromoCard } from "@/components/dashboard/PromoCard";
 import { MarketTicker } from "@/components/dashboard/MarketTicker";
 import { PendingAlertsScroller } from "@/components/dashboard/PendingAlertsScroller";
+import { apiUrl } from "@/lib/api";
 
 type AccountBalance = {
     balance: number;
@@ -101,8 +102,8 @@ export default function Dashboard() {
         const loadBalances = async () => {
             try {
                 const [realResponse, demoResponse] = await Promise.all([
-                    fetch("/api/user/balance?mode=real", { headers }),
-                    fetch("/api/user/balance?mode=demo", { headers }),
+                    fetch(apiUrl("/api/user/balance?mode=real"), { headers }),
+                    fetch(apiUrl("/api/user/balance?mode=demo"), { headers }),
                 ]);
 
                 const nextBalances = {
@@ -133,9 +134,11 @@ export default function Dashboard() {
         const loadTicker = async () => {
             try {
                 const response = await fetch(
-                    `/api/prices/crypto?ids=${encodeURIComponent(
-                        TICKER_SYMBOLS.map((symbol) => symbol.id).join(",")
-                    )}`
+                    apiUrl(
+                        `/api/prices/crypto?ids=${encodeURIComponent(
+                            TICKER_SYMBOLS.map((symbol) => symbol.id).join(",")
+                        )}`
+                    )
                 );
                 if (!response.ok) {
                     return;
@@ -164,7 +167,7 @@ export default function Dashboard() {
 
         const loadPendingAlerts = async () => {
             try {
-                const response = await fetch("/api/user/profile", { headers });
+                const response = await fetch(apiUrl("/api/user/profile"), { headers });
                 if (!response.ok) {
                     return;
                 }

@@ -1,6 +1,6 @@
-# GitHub Secrets Setup Checklist
+# GitHub Secrets Setup Checklist (legacy)
 
-Complete this checklist to enable automated CI/CD deployments.
+**This repo deploys with a server webhook + `deploy-prod.sh`, not GitHub Actions.** See **`DEPLOYMENT.md`** and **`.deploy.env.example`**. The checklist below only applies if you reintroduce SSH-based CI deploys.
 
 ## 📝 Prerequisites Checklist
 

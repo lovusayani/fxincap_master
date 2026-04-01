@@ -314,6 +314,9 @@ export const getAuthenticatedBalance: RequestHandler = async (req, res) => {
     res.json({
       success: true,
       balance: {
+        tradingMode: metrics.tradingMode,
+        accountNumber: metrics.accountNumber,
+        leverage: metrics.leverage,
         balance: metrics.balance,
         equity: metrics.equity,
         margin: metrics.margin,

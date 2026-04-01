@@ -7,6 +7,7 @@ import TradingLayout from "@/components/trading/layout/TradingLayout";
 import { useMarketStream } from "@/hooks/useMarketStream";
 import { useToast } from "@/hooks/use-toast";
 import { calculateLotFromAllocatedMargin, calculateRequiredMargin } from "@/lib/trading";
+import { apiUrl } from "@/lib/api";
 import type {
   OrderBookRow,
   RecentTradeRow,
@@ -25,7 +26,7 @@ function useAccountBalance(refreshKey: number): AccountBalance | null {
 
     const fetchBalance = async () => {
       try {
-        const res = await fetch("/api/user/balance", {
+        const res = await fetch(apiUrl("/api/user/balance"), {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (res.ok) {
@@ -228,7 +229,7 @@ export default function Markets() {
     setSubmitting(true);
 
     try {
-      const res = await fetch(isPendingOrder ? "/api/orders" : "/api/trades/open", {
+      const res = await fetch(isPendingOrder ? apiUrl("/api/orders") : apiUrl("/api/trades/open"), {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({

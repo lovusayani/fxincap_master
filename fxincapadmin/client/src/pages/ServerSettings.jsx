@@ -21,8 +21,20 @@ export const ServerSettings = () => {
     const tdKey = provMap.twelvedata?.api_key
     const fhKey = provMap.finnhub?.api_key
     return [
-      { key: 'finnhub', name: 'Finnhub', url: fhKey ? `wss://ws.finnhub.io?token=${fhKey}` : 'wss://ws.finnhub.io', enabled: provMap.finnhub?.enabled },
-      { key: 'twelvedata', name: 'TwelveData', url: tdKey ? `wss://ws.twelvedata.com/v1/quotes/price?apikey=${tdKey}` : 'wss://ws.twelvedata.com/v1/quotes/price', enabled: provMap.twelvedata?.enabled },
+      {
+        key: 'finnhub',
+        name: 'Finnhub',
+        url: fhKey ? `wss://ws.finnhub.io?token=${encodeURIComponent(fhKey)}` : 'wss://ws.finnhub.io',
+        enabled: provMap.finnhub?.enabled,
+      },
+      {
+        key: 'twelvedata',
+        name: 'TwelveData',
+        url: tdKey
+          ? `wss://ws.twelvedata.com/v1/quotes/price?apikey=${encodeURIComponent(tdKey)}`
+          : 'wss://ws.twelvedata.com/v1/quotes/price',
+        enabled: provMap.twelvedata?.enabled,
+      },
       { key: 'binance', name: 'Binance', url: 'wss://stream.binance.com:9443/ws', enabled: provMap.binance?.enabled },
     ]
   }, [providers])
@@ -212,12 +224,21 @@ export const ServerSettings = () => {
         setProviders(list)
         if (list.length === 0) {
           setProviderEmptyHint(
-            'WS returned no provider rows. Usually the WS service DB env (PGHOST/PGPASSWORD) does not match fxincapapi, or ws_api_keys was never seeded — check fxincap-ws logs and Postgres.'
+            'WS returned no provider rows. On the WS host: align PGHOST, PGUSER, PGPASSWORD, PGDATABASE with fxincapapi; restart fxincap-ws; or run fxincapws/sql/seed_ws_api_keys.sql on that database. Check fxincap-ws logs for "ws_api_keys has zero rows".'
           )
         }
       } else {
         setProviders([])
-        setProviderEmptyHint(json?.error || `WS providers request failed (${res.status})`)
+        const err = json?.error || `WS providers request failed (${res.status})`
+        if (res.status === 401) {
+          setProviderEmptyHint(
+            `${err} Set WS_ADMIN_TOKEN on the admin server to match ADMIN_TOKEN on fxincap-ws.`
+          )
+        } else if (res.status === 503) {
+          setProviderEmptyHint(`${err} Fix PostgreSQL credentials / network for fxincap-ws.`)
+        } else {
+          setProviderEmptyHint(err)
+        }
       }
     } catch {
       setProviders([])

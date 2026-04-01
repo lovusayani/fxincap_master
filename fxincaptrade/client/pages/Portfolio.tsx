@@ -5,6 +5,19 @@ import Header from "@/components/Header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useTradingStore } from "@/state/trading-store";
+import { apiUrl } from "@/lib/api";
+
+function normalizeListPayload(json: unknown, keys: string[]): unknown[] {
+  if (Array.isArray(json)) return json;
+  if (json && typeof json === "object") {
+    const o = json as Record<string, unknown>;
+    for (const k of keys) {
+      const v = o[k];
+      if (Array.isArray(v)) return v;
+    }
+  }
+  return [];
+}
 
 interface Position {
   id: string;
@@ -136,12 +149,12 @@ export default function PortfolioPage() {
     const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
     setLoading(true);
     Promise.all([
-      fetch("/api/positions/open", { headers }).then((r) => r.json()),
-      fetch("/api/orders", { headers }).then((r) => r.json()),
+      fetch(apiUrl("/api/positions/open"), { headers }).then(async (r) => normalizeListPayload(await r.json(), ["positions", "trades"])),
+      fetch(apiUrl("/api/orders"), { headers }).then(async (r) => normalizeListPayload(await r.json(), ["orders"])),
     ])
       .then(([pos, ords]) => {
-        setPositions(Array.isArray(pos) ? pos : []);
-        setOrders(Array.isArray(ords) ? ords : []);
+        setPositions(Array.isArray(pos) ? (pos as Position[]) : []);
+        setOrders(Array.isArray(ords) ? (ords as Order[]) : []);
       })
       .catch(() => { })
       .finally(() => setLoading(false));
@@ -155,7 +168,7 @@ export default function PortfolioPage() {
 
   const closePosition = (id: string) => {
     const token = localStorage.getItem("auth_token");
-    fetch("/api/positions/close", {
+    fetch(apiUrl("/api/positions/close"), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ positionId: id }),
@@ -164,8 +177,8 @@ export default function PortfolioPage() {
 
   const cancelOrder = (id: string) => {
     const token = localStorage.getItem("auth_token");
-    fetch(`/api/orders/${id}/cancel`, {
-      method: "POST",
+    fetch(apiUrl(`/api/orders/${id}`), {
+      method: "DELETE",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     }).then(() => fetchData());
   };

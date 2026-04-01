@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Header from "@/components/Header";
+import { apiUrl } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -99,7 +100,7 @@ export default function DepositPage() {
 
     const loadPaymentConfig = async () => {
         try {
-            const response = await fetch("/api/user/deposit-payment-config", { headers: authHeaders });
+            const response = await fetch(apiUrl("/api/user/deposit-payment-config"), { headers: authHeaders });
             if (!response.ok) return;
             const json = await response.json();
             const nextChains = json?.data?.chains || [];
@@ -114,7 +115,7 @@ export default function DepositPage() {
 
     const loadOffers = async () => {
         try {
-            const response = await fetch("/api/user/deposit-offers", { headers: authHeaders });
+            const response = await fetch(apiUrl("/api/user/deposit-offers"), { headers: authHeaders });
             if (!response.ok) return;
             const json = await response.json();
             setOffers(Array.isArray(json?.data) ? json.data : []);
@@ -126,7 +127,7 @@ export default function DepositPage() {
     const loadDepositRows = async () => {
         setLoadingRows(true);
         try {
-            const response = await fetch("/api/user/fund-requests", { headers: authHeaders });
+            const response = await fetch(apiUrl("/api/user/fund-requests"), { headers: authHeaders });
             if (!response.ok) return;
             const json = await response.json();
             const rows = Array.isArray(json?.requests) ? json.requests : [];
@@ -169,7 +170,7 @@ export default function DepositPage() {
         }
 
         try {
-            const response = await fetch("/api/user/deposit/validate-promo", {
+            const response = await fetch(apiUrl("/api/user/deposit/validate-promo"), {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -232,7 +233,7 @@ export default function DepositPage() {
             }
             formData.append("screenshot", screenshot);
 
-            const response = await fetch("/api/user/fund-request", {
+            const response = await fetch(apiUrl("/api/user/fund-request"), {
                 method: "POST",
                 headers: {
                     ...authHeaders,

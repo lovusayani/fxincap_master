@@ -153,6 +153,39 @@ export function createServer() {
     res.json(mockPrices);
   });
 
+  /** Dashboard ticker: CoinGecko simple prices (ids = comma-separated CoinGecko ids, e.g. bitcoin,ethereum) */
+  app.get("/api/prices/crypto", async (req, res) => {
+    const ids = typeof req.query.ids === "string" ? req.query.ids.trim() : "";
+    if (!ids) {
+      return res.status(400).json({ success: false, message: "Missing ids query parameter" });
+    }
+    try {
+      const url = new URL("https://api.coingecko.com/api/v3/simple/price");
+      url.searchParams.set("ids", ids);
+      url.searchParams.set("vs_currencies", "usd");
+      const cg = await fetch(url, {
+        headers: { Accept: "application/json" },
+      });
+      if (!cg.ok) {
+        return res.status(502).json({ success: false, message: "CoinGecko request failed" });
+      }
+      const raw = (await cg.json()) as Record<string, { usd?: number }>;
+      const prices: Record<string, { usd: number }> = {};
+      for (const id of ids.split(",")) {
+        const key = id.trim();
+        if (!key) continue;
+        const usd = raw[key]?.usd;
+        if (typeof usd === "number") {
+          prices[key] = { usd };
+        }
+      }
+      res.json({ success: true, prices });
+    } catch (e) {
+      console.error("crypto prices:", e);
+      res.status(500).json({ success: false, message: "Failed to load crypto prices" });
+    }
+  });
+
   app.use(express.static(spaPath));
 
   // 404 Handler - serve index.html for React Router (must be after all API routes)

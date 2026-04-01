@@ -84,6 +84,18 @@ export async function initSettingsTable() {
     }
 
     try {
+      const cnt = await p.query('SELECT COUNT(*)::int AS c FROM ws_api_keys');
+      const n = cnt.rows?.[0]?.c ?? 0;
+      if (n === 0) {
+        console.error(
+          '[fxincap-ws] ws_api_keys has zero rows after seed. Run fxincapws/sql/seed_ws_api_keys.sql against the same DB as fxincapapi, or fix PG* credentials.'
+        );
+      }
+    } catch (e) {
+      console.warn('[fxincap-ws] post-seed row count check failed:', e.message);
+    }
+
+    try {
       const enabledProviders = await p.query(`
         SELECT provider
         FROM ws_api_keys
@@ -109,21 +121,17 @@ export async function initSettingsTable() {
 
 /**
  * Get all API providers with their keys and enabled status
+ * Throws if the DB pool is missing or the query fails (so /admin/providers can return 503/500 instead of a misleading empty list).
  */
 export async function getAllProviders() {
-  try {
-    const p = getPool();
-    if (!p) throw new Error('no-pool');
-    const result = await p.query(`
+  const p = getPool();
+  if (!p) throw new Error('PostgreSQL pool unavailable — set PGHOST, PGUSER, PGPASSWORD, PGDATABASE (same as fxincapapi)');
+  const result = await p.query(`
       SELECT id, provider, api_key, enabled, endpoint, notes, updated_at
       FROM ws_api_keys
       ORDER BY ${providerOrderSql('provider')}, provider
     `);
-    return result.rows || [];
-  } catch (e) {
-    console.warn('[fxincap-ws] getAllProviders failed:', e.message);
-    return [];
-  }
+  return result.rows || [];
 }
 
 /**

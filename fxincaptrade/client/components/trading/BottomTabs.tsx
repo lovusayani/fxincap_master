@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type { PriceTick } from "@/hooks/useMarketStream";
+import { apiUrl } from "@/lib/api";
 
 interface Position {
     id: string;
@@ -89,9 +90,9 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
         setErrorMessage(null);
         try {
             const [posRes, ordRes, histRes] = await Promise.all([
-                fetch("/api/trades/open", { headers: authHeaders() }),
-                fetch("/api/orders", { headers: authHeaders() }),
-                fetch("/api/history?limit=10", { headers: authHeaders() }),
+                fetch(apiUrl("/api/trades/open"), { headers: authHeaders() }),
+                fetch(apiUrl("/api/orders"), { headers: authHeaders() }),
+                fetch(apiUrl("/api/history?limit=10"), { headers: authHeaders() }),
             ]);
             const requestErrors: string[] = [];
             if (posRes.ok) {
@@ -162,7 +163,7 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
                 setErrorMessage(`No live ${side === "SELL" ? "ask" : "bid"} quote is available for ${symbol}.`);
                 return;
             }
-            const res = await fetch(`/api/trades/${positionId}/close`, {
+            const res = await fetch(apiUrl(`/api/trades/${positionId}/close`), {
                 method: "PUT",
                 headers: authHeaders(),
                 body: JSON.stringify({ closePrice }),
@@ -186,7 +187,7 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
 
     const cancelOrder = async (orderId: string) => {
         try {
-            const res = await fetch(`/api/orders/${orderId}`, {
+            const res = await fetch(apiUrl(`/api/orders/${orderId}`), {
                 method: "DELETE",
                 headers: authHeaders(),
             });

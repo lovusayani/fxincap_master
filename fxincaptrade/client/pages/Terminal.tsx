@@ -7,6 +7,7 @@ import BottomTabs from "@/components/trading/BottomTabs";
 import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from "lucide-react";
 import { useMarketStream } from "@/hooks/useMarketStream";
 import { useToast } from "@/hooks/use-toast";
+import { apiUrl } from "@/lib/api";
 import { calculateRequiredMargin } from "@/lib/trading";
 
 interface AccountBalance {
@@ -27,7 +28,7 @@ function useAccountBalance(refreshKey: number): AccountBalance | null {
 
         const fetch_ = async () => {
             try {
-                const res = await fetch("/api/user/balance", {
+                const res = await fetch(apiUrl("/api/user/balance"), {
                     headers: { Authorization: `Bearer ${token}` },
                 });
                 if (res.ok) {
@@ -130,7 +131,7 @@ export default function Terminal() {
         setSubmitting(true);
 
         try {
-            const res = await fetch(isPendingOrder ? "/api/orders" : "/api/trades/open", {
+            const res = await fetch(isPendingOrder ? apiUrl("/api/orders") : apiUrl("/api/trades/open"), {
                 method: "POST",
                 headers: authHeaders(),
                 body: JSON.stringify({

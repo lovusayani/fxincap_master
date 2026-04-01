@@ -433,6 +433,7 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
       return res.json({
         success: true,
         balance: {
+          tradingMode: mode,
           accountNumber: null,
           balance: 0,
           equity: 0,
@@ -458,6 +459,7 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
     res.json({
       success: true,
       balance: {
+        tradingMode: account.trading_mode || mode,
         accountNumber: account.account_number || account.accountNumber || null,
         balance: totalBalance,
         equity: parseFloat(account.equity) || 0,
@@ -468,6 +470,69 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/trading-mode", verifyToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+    const { tradingMode: requestedTradingMode, mode } = req.body || {};
+    const tradingMode = requestedTradingMode || mode;
+    if (!tradingMode || !["demo", "real"].includes(String(tradingMode))) {
+      return res.status(400).json({ success: false, message: "Invalid trading mode" });
+    }
+
+    const acctRows = await query(
+      "SELECT account_number, balance, equity, margin_free FROM user_accounts WHERE user_id = $1 AND trading_mode = $2 LIMIT 1",
+      [userId, tradingMode]
+    );
+    if (!Array.isArray(acctRows) || acctRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Account not found for selected mode" });
+    }
+
+    const updated = await query(
+      "UPDATE user_profiles SET selected_trading_mode = $1 WHERE user_id = $2 RETURNING user_id",
+      [tradingMode, userId]
+    );
+    if (!Array.isArray(updated) || updated.length === 0) {
+      await query("INSERT INTO user_profiles (id, user_id, selected_trading_mode) VALUES ($1, $2, $3)", [
+        uuidv4(),
+        userId,
+        tradingMode,
+      ]);
+    }
+
+    const acct = acctRows[0] as any;
+    const margin =
+      acct.margin_free != null && acct.equity != null && acct.balance != null
+        ? Math.max(0, Number(acct.equity) - Number(acct.margin_free))
+        : 0;
+    const marginLevel = margin > 0 ? Number(((Number(acct.equity) / margin) * 100).toFixed(2)) : 0;
+    const levRows = await query("SELECT leverage FROM user_profiles WHERE user_id = $1 LIMIT 1", [userId]);
+    const leverage =
+      Array.isArray(levRows) && levRows.length > 0 ? Number((levRows[0] as any).leverage || 500) : 500;
+
+    res.json({
+      success: true,
+      message: "Trading mode applied",
+      data: {
+        tradingMode,
+        accountNumber: acct.account_number,
+        balance: Number(acct.balance),
+        equity: Number(acct.equity),
+        margin,
+        freeMargin: Number(acct.margin_free),
+        marginLevel,
+        currency: "USD",
+        leverage,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error updating trading mode:", error);
+    res.status(500).json({ success: false, message: "Failed to update trading mode" });
   }
 });
 

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { apiUrl } from "@/lib/api";
 
 type AccountSummary = {
   tradingMode: "demo" | "real";
@@ -37,7 +38,11 @@ export const useTradingStore = create<TradingState>((set, get) => ({
       const token = localStorage.getItem("auth_token");
       const savedMode = localStorage.getItem("selected_trading_mode");
       const selectedMode = (mode || (savedMode === "real" ? "real" : savedMode === "demo" ? "demo" : undefined) || get().account?.tradingMode || "demo") as "demo" | "real";
-      const response = await fetch(`/api/user/balance?mode=${selectedMode}`, {
+      const balanceUrl =
+        mode != null
+          ? apiUrl(`/api/user/balance?mode=${encodeURIComponent(selectedMode)}`)
+          : apiUrl("/api/user/balance");
+      const response = await fetch(balanceUrl, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!response.ok) return;

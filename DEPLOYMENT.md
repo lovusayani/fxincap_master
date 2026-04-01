@@ -1,6 +1,10 @@
-# FX Incap Monorepo - CI/CD & Deployment Guide
+# FX Incap Monorepo - Deployment Guide
 
-This is a monorepo containing all FX Incap applications with automated CI/CD pipelines for staging and production deployments.
+Deployments use a **GitHub webhook** hitting **`deploy/webhook-server.cjs`** on the server (PM2: `fxincap-deploy-webhook`), not GitHub Actions. Push → GitHub sends `push` → server runs **`deploy-prod.sh`** → **`install-prod.sh`** (install + build) → **`run-prod.sh`** (PM2).
+
+Server env: copy **`.deploy.env.example`** → **`.deploy.env`** (gitignored), or run **`bash setup-server-deploy-env.sh`** once from the repo root on the server (creates **`.deploy.env`** if missing). Then set **`DEPLOY_WEBHOOK_SECRET`**, **`DEPLOY_BRANCH`**, and **`VITE_API_URL`**.
+
+> **Note:** This assistant cannot SSH into your server. After you `git pull`, run the commands in **Final checklist** below on the machine that hosts the app.
 
 ## 📁 Repository Structure
 
@@ -11,31 +15,41 @@ fxfx/
 ├── fxincapapi/        # API backend (Node.js)
 ├── fxincaptrade/      # Trading platform (Vite + Node.js)
 ├── fxincapws/         # WebSocket server (Node.js)
-├── .github/
-│   └── workflows/
-│       ├── ci-staging.yml      # Dev branch → Staging deployment
-│       └── ci-production.yml    # Main branch → Production deployment
-└── .gitignore
+├── deploy/
+│   └── webhook-server.cjs   # HTTP webhook (GitHub push → deploy-prod.sh)
+├── deploy-prod.sh     # git fetch/reset + install-prod + run-prod
+├── install-prod.sh    # pnpm install + build (reads .deploy.env for VITE_API_URL)
+├── run-prod.sh        # PM2 start (sources .deploy.env)
+├── setup-server-deploy-env.sh  # one-time: create .deploy.env from example (run on server)
+└── .deploy.env.example
 ```
 
 ## 🚀 Deployment Strategy
 
 ### Branch Structure
-- **`dev`** branch → Automatically deploys to **staging** environment
-- **`main`** branch → Automatically deploys to **production** environment
+- Configure **`DEPLOY_BRANCH`** in **`.deploy.env`** to match the branch this server should deploy (e.g. `dev` or `main`).
 
-### CI/CD Pipeline Flow
+### Webhook flow
 
-1. **Code Push** → Developer pushes to `dev` or `main` branch
-2. **GitHub Actions Triggered** → Runs automated tests and builds
-3. **Build** → Compiles all sub-projects
-4. **Deploy** → Automatically deploys to appropriate server
+1. **Push** to the configured branch on GitHub  
+2. **GitHub** POSTs to **`https://fxincap.com/hooks/deploy`** (existing webhook; nginx terminates TLS and proxies to **`deploy/webhook-server.cjs`** on **`DEPLOY_PORT`** default **9010**) with **`X-Hub-Signature-256`**  
+3. **`webhook-server.cjs`** verifies the secret and runs **`deploy-prod.sh`**  
+4. **`install-prod.sh`** builds all apps with **`VITE_API_URL`** from **`.deploy.env`**
 
-## ⚙️ GitHub Secrets Configuration
+### GitHub repository webhook (already configured — do not add a duplicate)
 
-Before deployments work, you must configure GitHub Secrets in your repository settings.
+- **Payload URL:** **`https://fxincap.com/hooks/deploy`**  
+- **Content type:** `application/json`  
+- **Secret:** must match **`DEPLOY_WEBHOOK_SECRET`** in server **`.deploy.env`** (same secret you already set in GitHub)  
+- **Events:** Just the push event  
 
-### Staging Secrets (push to `dev` branch)
+If deliveries fail, fix **`.deploy.env`** / PM2 **`fxincap-deploy-webhook`** / nginx — do **not** register a second webhook unless you retire the old one.
+
+## ⚙️ Legacy: SSH / rsync (optional)
+
+If you previously used SSH-based deploy secrets, those are **not** required for the webhook path. Remove or ignore old docs that referenced GitHub Actions deploy jobs.
+
+### Staging Secrets (push to `dev` branch) — legacy reference only
 ```
 DEPLOY_KEY_STAGING      # Private SSH key for staging server
 DEPLOY_HOST_STAGING     # Staging server hostname/IP
@@ -82,22 +96,9 @@ sudo mkdir -p /var/www/fxincap
 sudo chown deploy:deploy /var/www/fxincap
 ```
 
-### Step 3: Add Private Key to GitHub Secrets
+### Step 3: Align secret with the existing webhook
 
-1. Go to GitHub repo → **Settings** → **Secrets and variables** → **Actions**
-2. Click **New repository secret**
-3. Name: `DEPLOY_KEY_STAGING` (or `DEPLOY_KEY_PROD`)
-4. Value: Paste the **entire contents** of your private key file (`fxincap-deploy`)
-5. Click **Add secret**
-
-### Step 4: Add Server Details to GitHub Secrets
-
-Repeat for:
-- `DEPLOY_HOST_STAGING` → `your-staging-server.com`
-- `DEPLOY_USER_STAGING` → `deploy`
-- `DEPLOY_PATH_STAGING` → `/var/www/fxincap`
-
-(Same for PROD variants)
+Your payload URL is already **`https://fxincap.com/hooks/deploy`**. On the server, **`DEPLOY_WEBHOOK_SECRET`** in **`.deploy.env`** must be the **same** string as the **Secret** on that GitHub webhook.
 
 ## 📋 Server Setup Requirements
 
@@ -128,43 +129,59 @@ pm2 save
 
 ## 🔄 Deployment Workflow
 
-### Manual Deployment (Advanced)
+### Manual deployment (same as webhook)
 
-If you need to manually deploy:
+From the repo root on the server:
 
 ```bash
-# Clone the repo (first time)
-git clone git@github.com:YOUR_USERNAME/fxfx.git
-cd fxfx
-
-# For staging (dev branch)
-git fetch origin dev
-git checkout dev
-git reset --hard origin/dev
-
-# For production (main branch)
-git fetch origin main
-git checkout main
-git reset --hard origin/main
-
-# Install dependencies
-pnpm install
-
-# Build all projects
-pnpm build
-
-# Start services with PM2
-pm2 start ecosystem.config.js
-# or restart existing
-pm2 restart all
+export DEPLOY_BRANCH=dev   # or main
+bash deploy-prod.sh
 ```
 
-## 📊 Monitoring Deployments
+This runs **`install-prod.sh`** (with **`VITE_API_URL`** from **`.deploy.env`**) and **`run-prod.sh`**.
 
-### Check GitHub Actions Status
-1. Push code to `dev` or `main`
-2. Go to **Actions** tab in GitHub
-3. Click on the workflow run to see logs
+### Push-to-live (git clone on server) — required once
+
+**`deploy-prod.sh`** runs **`git fetch`** and **`git reset --hard origin/<DEPLOY_BRANCH>`**. If the deploy directory has **no `.git`**, webhook deploys **cannot** pull new code from GitHub until you fix it.
+
+**One-time migration** (adjust paths, branch, and repo URL; keep a backup of **`.deploy.env`**):
+
+```bash
+# Example: replace YOUR_ORG, fxfx, and paths
+sudo -i -u deploy   # or your deploy user
+cd /var/www   # parent of your app folder
+
+cp fxincap-production/.deploy.env /tmp/fxincap.deploy.env.SAVE
+mv fxincap-production fxincap-production.bak-before-git-$(date +%Y%m%d)
+
+git clone -b dev --single-branch https://github.com/YOUR_ORG/fxfx.git fxincap-production
+# Private repo: use SSH deploy key or PAT:
+# git clone -b dev git@github.com:YOUR_ORG/fxfx.git fxincap-production
+
+cp /tmp/fxincap.deploy.env.SAVE fxincap-production/.deploy.env
+chmod 600 fxincap-production/.deploy.env
+
+cd fxincap-production
+bash deploy-prod.sh    # or: bash install-prod.sh && bash run-prod.sh
+```
+
+Then:
+
+- **`DEPLOY_BRANCH`** in **`.deploy.env`** must match the branch you push to (e.g. **`dev`**).
+- GitHub **Webhook** must fire on pushes to **that** branch (usually “Just push”).
+
+After this, **push → webhook → `deploy-prod.sh`** updates code from GitHub on every deploy.
+
+**Emergency only** (rebuild without updating from git):  
+`DEPLOY_ALLOW_NO_GIT=1 bash deploy-prod.sh`
+
+## 📊 Monitoring deployments
+
+### Webhook / deploy logs
+
+```bash
+pm2 logs fxincap-deploy-webhook
+```
 
 ### Monitor Server (via SSH)
 
@@ -197,43 +214,44 @@ pm2 reload all
 - Check ecosystem config files exist in each sub-project
 - Verify permissions on deployment directory
 
-### Builds fail on GitHub Actions
-- Check if `pnpm-lock.yaml` is missing (run `pnpm install` locally)
-- Ensure all environment variables are set
+### Builds fail during `install-prod.sh`
+- Run `pnpm install` locally and commit lockfiles
+- Set **`VITE_API_URL`** in **`.deploy.env`** on the server
+- Check **`pm2 logs`** for the app that failed
+
+### `deploy-prod.sh` exits with "no .git"
+- The live directory must be a **git clone** of your GitHub repo (see **Push-to-live** above), or set **`DEPLOY_ALLOW_NO_GIT=1`** only for a rebuild-without-pull.
 
 ## 🔐 Security Best Practices
 
-1. **Never commit private keys** to the repository
-2. **Use separate keys** for staging and production
-3. **Rotate keys periodically** (monthly recommended)
-4. **Restrict SSH** - Disable password auth, use key-only
-5. **Monitor deployments** - Review GitHub Actions logs
-6. **Backup before deploy** - Workflows automatically create backups
+1. **Never commit** **`.deploy.env`**, API keys, or webhook secrets
+2. **Rotate `DEPLOY_WEBHOOK_SECRET`** if it leaks (update GitHub webhook + **`.deploy.env`**)
+3. **Restrict** webhook URL (firewall / nginx TLS) and use HTTPS in production
+4. **Monitor** `pm2 logs fxincap-deploy-webhook` after each push
 
-## 📝 Making Your First Deployment
+## 📝 Deployment (webhook already at fxincap.com)
 
-1. Create a `dev` branch:
-   ```bash
-   git checkout -b dev
-   git push -u origin dev
-   ```
+1. On the server: ensure **`.deploy.env`** exists and **`DEPLOY_WEBHOOK_SECRET`** matches GitHub (**`https://fxincap.com/hooks/deploy`**), plus **`DEPLOY_BRANCH`** and **`VITE_API_URL`**
+2. **`bash run-prod.sh`** if PM2 / webhook is not running
+3. Push to **`DEPLOY_BRANCH`** — GitHub calls the **existing** webhook; no new webhook needed
+4. **`pm2 logs fxincap-deploy-webhook`** to confirm **`deploy-prod.sh`** ran
 
-2. Configure GitHub Secrets (see section above)
+## Final checklist (server — only if something was missing)
 
-3. Make a test commit:
-   ```bash
-   echo "# Deployment Test" >> README.md
-   git add README.md
-   git commit -m "Test staging deployment"
-   git push origin dev
-   ```
+Replace the path with your real deploy directory.
 
-4. Watch GitHub Actions complete the deployment
+```bash
+cd /var/www/fxfx   # or your path
+git pull
+bash setup-server-deploy-env.sh   # creates .deploy.env only if absent
+nano .deploy.env   # DEPLOY_WEBHOOK_SECRET must match GitHub secret for https://fxincap.com/hooks/deploy
+bash run-prod.sh
+```
 
-5. When ready for production, create a PR from `dev` → `main`, merge, and auto-deploy
+Do **not** create another GitHub webhook; keep using **`https://fxincap.com/hooks/deploy`**.
 
 ## 🆘 Need Help?
 
-- **GitHub Actions Logs**: Actions tab → workflow run → logs
-- **Server Logs**: `pm2 logs` or `/var/log/` on server
-- **SSH Issues**: Check `~/.ssh/authorized_keys` permissions on server
+- **Webhook**: GitHub → Settings → Webhooks → Recent Deliveries
+- **Server**: `pm2 logs` and logs under **`logs/`**
+- **401 invalid_signature**: **`DEPLOY_WEBHOOK_SECRET`** must match GitHub webhook secret

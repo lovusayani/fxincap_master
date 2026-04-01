@@ -1,3 +1,4 @@
+import { apiUrl } from "@/lib/api";
 import React, { useState } from "react";
 import Header from "@/components/Header";
 
@@ -16,7 +17,7 @@ export default function SupportPage() {
     setMessage(null);
     const token = localStorage.getItem("auth_token");
     try {
-      const res = await fetch("/api/support", {
+      const res = await fetch(apiUrl("/api/support"), {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ subject, description }),

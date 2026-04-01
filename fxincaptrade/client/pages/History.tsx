@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import Header from "@/components/Header";
+import { apiUrl } from "@/lib/api";
 
 interface TradeRecord {
   id: string;
@@ -18,11 +19,14 @@ export default function HistoryPage() {
 
   useEffect(() => {
     const token = localStorage.getItem("auth_token");
-    fetch("/api/history", {
+    fetch(apiUrl("/api/history"), {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((r) => r.json())
-      .then((data) => setHistory(Array.isArray(data) ? data : []))
+      .then((data) => {
+        const rows = Array.isArray(data) ? data : (data as { history?: TradeRecord[] })?.history || [];
+        setHistory(rows);
+      })
       .catch(() => { })
       .finally(() => setLoading(false));
   }, []);

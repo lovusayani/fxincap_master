@@ -6,14 +6,22 @@ export const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'changeme-admin-token';
 export const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || '';
 export const FINNHUB_WEBHOOK_SECRET = process.env.FINNHUB_WEBHOOK_SECRET || '';
 
-// Match fxincapapi discrete Pool settings: PG* only for host (ignore legacy DB_HOST if PGHOST unset).
-// A stale DB_HOST (dead DNS) must not win over the bundled default — that left ws_api_keys empty.
-// Same discrete fields as fxincapapi/src/lib/database.ts (do not chain DB_USER/DB_PASSWORD — .env often has stale placeholders).
+// Prefer PG* (same as fxincapapi). Fall back to DB_* — many deployments only set DB_HOST/DB_USER/DB_PASSWORD in fxincapws/.env.
+const pgHost =
+  process.env.PGHOST ||
+  process.env.DB_HOST ||
+  'kaka1fxincap-do-user-32897695-0.d.db.ondigitalocean.com';
+const pgPort = process.env.PGPORT || process.env.DB_PORT || '25060';
+const pgUser = process.env.PGUSER || process.env.DB_USER || 'amitkaka';
+const pgPassword = process.env.PGPASSWORD || process.env.DB_PASSWORD || '';
+const pgDatabase = process.env.PGDATABASE || process.env.DB_NAME || 'fxincapmain';
+const pgSslMode = process.env.PGSSLMODE || process.env.DB_SSLMODE || 'require';
+
 export const DB = {
-  host: process.env.PGHOST || 'kaka1fxincap-do-user-32897695-0.d.db.ondigitalocean.com',
-  port: parseInt(process.env.PGPORT || '25060', 10),
-  user: process.env.PGUSER || 'amitkaka',
-  password: process.env.PGPASSWORD || '',
-  database: process.env.PGDATABASE || 'fxincapmain',
-  ssl: (process.env.PGSSLMODE || 'require').toLowerCase() !== 'disable',
+  host: pgHost,
+  port: parseInt(pgPort, 10),
+  user: pgUser,
+  password: pgPassword,
+  database: pgDatabase,
+  ssl: pgSslMode.toLowerCase() !== 'disable',
 };

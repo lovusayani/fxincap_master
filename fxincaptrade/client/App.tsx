@@ -19,6 +19,7 @@ import HistoryPage from "@/pages/History";
 import PositionsPage from "@/pages/Positions";
 import SettingsPage from "@/pages/Settings";
 import IbPage from "@/pages/IB";
+import { apiUrl } from "@/lib/api";
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -523,7 +524,7 @@ export default function App() {
 
     const fetchStyleSettings = async () => {
       try {
-        const response = await fetch("/api/admin/style-settings", {
+        const response = await fetch(apiUrl("/api/admin/style-settings"), {
           method: "GET",
           credentials: "omit",
         });

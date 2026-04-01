@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ArrowRight, CreditCard, RefreshCw, Wallet } from "lucide-react";
 import Header from "@/components/Header";
+import { apiUrl } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -136,9 +137,9 @@ export default function WalletPage() {
       setLoading(true);
       try {
         const [balanceResponse, offersResponse, requestsResponse] = await Promise.all([
-          fetch("/api/user/balance?mode=real", { headers: authHeaders }),
-          fetch("/api/user/deposit-offers", { headers: authHeaders }),
-          fetch("/api/user/fund-requests", { headers: authHeaders }),
+          fetch(apiUrl("/api/user/balance?mode=real"), { headers: authHeaders }),
+          fetch(apiUrl("/api/user/deposit-offers"), { headers: authHeaders }),
+          fetch(apiUrl("/api/user/fund-requests"), { headers: authHeaders }),
         ]);
 
         const nextBalance: RealBalanceSummary = {

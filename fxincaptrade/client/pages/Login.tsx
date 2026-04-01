@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import PlatformLogo from "@/components/PlatformLogo";
+import { apiUrl } from "@/lib/api";
 
 export default function LoginPage() {
     const navigate = useNavigate();
@@ -27,7 +28,7 @@ export default function LoginPage() {
         setError("");
         setInfoMessage("");
         try {
-            const res = await fetch("/api/auth/login", {
+            const res = await fetch(apiUrl("/api/auth/login"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, password }),

@@ -36,8 +36,34 @@ const uploadsPath = path.resolve(__dirname, "../uploads");
 const app: Express = express();
 const server = createHttpServer(app);
 
+function buildCors() {
+  const raw = process.env.CORS_ORIGIN || process.env.CORS_ORIGINS || "";
+  const fromEnv = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const devLocal =
+    process.env.NODE_ENV !== "production"
+      ? ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173"]
+      : [];
+  const allowed = Array.from(new Set([...fromEnv, ...devLocal]));
+  if (allowed.length === 0) {
+    return cors({ origin: true, credentials: true });
+  }
+  return cors({
+    credentials: true,
+    origin(origin, cb) {
+      if (!origin || allowed.includes(origin)) {
+        cb(null, true);
+      } else {
+        cb(null, false);
+      }
+    },
+  });
+}
+
 // Middleware
-app.use(cors());
+app.use(buildCors());
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 

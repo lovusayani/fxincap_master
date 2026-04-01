@@ -107,7 +107,9 @@ export default function Header() {
     return (
         <header
             className={`platform-menu-surface sticky top-0 z-50 border-b ${isDark ? "border-white/10" : "border-gray-200"}`}
-            style={{ backgroundColor: isDark ? "var(--platform-header-bg, #991b1b)" : "#ffffff" }}
+            style={{
+                backgroundColor: `var(--platform-header-bg, ${isDark ? "#111827" : "#ffffff"})`,
+            }}
         >
             <div className="max-w-full px-4 py-2.5 flex items-center gap-3">
                 <div className="flex items-center gap-2 min-w-0 flex-shrink-0 lg:min-w-[170px] lg:w-[170px]">
