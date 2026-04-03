@@ -43,6 +43,7 @@ export default function LoginPage() {
                 return;
             }
             localStorage.setItem("auth_token", data?.token || data?.accessToken || "demo-token");
+            localStorage.removeItem("selected_trading_mode");
             navigate("/");
         } catch {
             setError("Unable to login right now");

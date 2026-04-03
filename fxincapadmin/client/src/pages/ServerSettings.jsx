@@ -126,6 +126,18 @@ export const ServerSettings = () => {
   }
 
   const testSocketEndpoint = useCallback((target) => {
+    const needsKey = target.key !== 'binance'
+    const hasKeyInUrl =
+      (target.url && (target.url.includes('token=') || target.url.includes('apikey='))) || false
+    if (needsKey && !hasKeyInUrl) {
+      return Promise.resolve({
+        status: 'skipped',
+        latencyMs: null,
+        checkedAt: new Date().toISOString(),
+        message: 'No API key in URL — set the key in WS Provider Settings above, then Reload',
+      })
+    }
+
     return new Promise((resolve) => {
       const startedAt = Date.now()
       let settled = false
@@ -792,7 +804,9 @@ export const ServerSettings = () => {
                           ? 'text-emerald-300'
                           : status === 'pending'
                             ? 'text-amber-300'
-                            : 'text-rose-300'
+                            : status === 'skipped'
+                              ? 'text-slate-400'
+                              : 'text-rose-300'
                       return (
                         <tr key={target.key} className="border-b border-slate-800/80 align-top">
                           <td className="py-2 pr-4 font-medium">{target.name}</td>

@@ -36,11 +36,9 @@ export const useTradingStore = create<TradingState>((set, get) => ({
   loadAccount: async (mode) => {
     try {
       const token = localStorage.getItem("auth_token");
-      const savedMode = localStorage.getItem("selected_trading_mode");
-      const selectedMode = (mode || (savedMode === "real" ? "real" : savedMode === "demo" ? "demo" : undefined) || get().account?.tradingMode || "demo") as "demo" | "real";
       const balanceUrl =
         mode != null
-          ? apiUrl(`/api/user/balance?mode=${encodeURIComponent(selectedMode)}`)
+          ? apiUrl(`/api/user/balance?mode=${encodeURIComponent(mode)}`)
           : apiUrl("/api/user/balance");
       const response = await fetch(balanceUrl, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -50,7 +48,7 @@ export const useTradingStore = create<TradingState>((set, get) => ({
       const account = data?.balance || data?.data || data?.account || data || {};
 
       const nextAccount: AccountSummary = {
-        tradingMode: (account.tradingMode || selectedMode || "demo") as "demo" | "real",
+        tradingMode: (account.tradingMode || account.trading_mode || mode || "demo") as "demo" | "real",
         accountNumber: account.accountNumber || account.account_number,
         balance: Number(account.balance || 0),
         equity: Number(account.equity || 0),

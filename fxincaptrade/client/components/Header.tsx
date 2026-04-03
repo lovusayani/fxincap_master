@@ -63,6 +63,7 @@ export default function Header() {
 
     const handleLogout = () => {
         localStorage.removeItem("auth_token");
+        localStorage.removeItem("selected_trading_mode");
         navigate("/login");
     };
 

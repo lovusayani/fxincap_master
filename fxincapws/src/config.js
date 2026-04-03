@@ -2,7 +2,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 export const PORT = parseInt(process.env.WS_PORT || '4040', 10);
-export const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'changeme-admin-token';
+/** Trim so .env values with trailing spaces do not break admin UI auth */
+export const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || 'changeme-admin-token').trim();
 export const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || '';
 export const FINNHUB_WEBHOOK_SECRET = process.env.FINNHUB_WEBHOOK_SECRET || '';
 

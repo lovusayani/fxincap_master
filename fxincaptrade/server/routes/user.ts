@@ -20,10 +20,22 @@ export async function loadUserAccountMetrics(userId: string, req: Request): Prom
     "SELECT selected_trading_mode FROM user_profiles WHERE user_id = $1",
     [userId]
   );
-  const persistedMode =
-    profileRows.length > 0 && (profileRows[0] as any).selected_trading_mode
-      ? (profileRows[0] as any).selected_trading_mode
-      : "demo";
+  const persistedRaw =
+    profileRows.length > 0 ? ((profileRows[0] as any).selected_trading_mode as string | null) : null;
+
+  const { rows: hasRealRows } = await pool.query(
+    "SELECT 1 FROM user_accounts WHERE user_id = $1 AND trading_mode = 'real' LIMIT 1",
+    [userId]
+  );
+  const hasReal = hasRealRows.length > 0;
+
+  let persistedMode: string;
+  if (hasReal) {
+    persistedMode = persistedRaw === "demo" ? "demo" : "real";
+  } else {
+    persistedMode = persistedRaw || "demo";
+  }
+
   const qMode = (req.query.mode as string) || "";
   const requestedMode = ["demo", "real"].includes(qMode) ? qMode : persistedMode;
 

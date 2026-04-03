@@ -317,23 +317,28 @@ app.post('/webhook/finnhub', (req, res) => {
 
 // Admin endpoints
 app.get('/admin/providers', async (req, res) => {
-  const token = req.headers['x-admin-token'] || req.query.token;
+  const rawToken = req.headers['x-admin-token'] || req.query.token;
+  const token = rawToken != null ? String(rawToken).trim() : '';
   if (token !== ADMIN_TOKEN) {
     return res.status(401).json({
       success: false,
-      error: 'Unauthorized — ADMIN_TOKEN on fxincap-ws must match WS_ADMIN_TOKEN on the admin server',
+      error: 'Unauthorized — ADMIN_TOKEN in fxincap-ws/.env must match WS_ADMIN_TOKEN in fxincapadmin/client/.env (Vite proxy)',
     });
   }
   try {
     const providers = await getAllProviders();
     res.json({ success: true, providers });
   } catch (e) {
-    res.status(503).json({ success: false, error: e.message || 'Database error', providers: [] });
+    const msg = e?.message || 'Database error';
+    console.error('[fxincap-ws] GET /admin/providers:', msg);
+    // 200 + success:false so the admin UI always gets JSON (some proxies turn 5xx into opaque 500 HTML)
+    res.status(200).json({ success: false, error: msg, providers: [] });
   }
 });
 
 app.post('/admin/providers/:provider', async (req, res) => {
-  const token = req.headers['x-admin-token'] || req.query.token;
+  const rawToken = req.headers['x-admin-token'] || req.query.token;
+  const token = rawToken != null ? String(rawToken).trim() : '';
   if (token !== ADMIN_TOKEN) {
     return res.status(401).json({
       success: false,
@@ -370,7 +375,8 @@ app.get('/admin/settings', async (req, res) => {
 });
 
 app.post('/admin/settings', async (req, res) => {
-  const token = req.headers['x-admin-token'] || req.query.token;
+  const rawToken = req.headers['x-admin-token'] || req.query.token;
+  const token = rawToken != null ? String(rawToken).trim() : '';
   if (token !== ADMIN_TOKEN) return res.status(401).json({ success: false, error: 'Unauthorized' });
   const { provider: p, api_key } = req.body || {};
   if (!['finnhub', 'binance', 'twelvedata'].includes(p)) return res.status(400).json({ success: false, error: 'Invalid provider' });

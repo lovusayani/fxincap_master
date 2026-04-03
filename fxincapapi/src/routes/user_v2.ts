@@ -411,15 +411,28 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
     const userId = req.user?.id;
     let mode = (req.query.mode as string) || "";
 
-    // If no mode specified, use the user's selected_trading_mode from their profile
+    // If no mode in query: prefer real when a real account row exists unless the user explicitly chose demo in Settings.
     if (!mode) {
       const profileRows = await query(
         "SELECT selected_trading_mode FROM user_profiles WHERE user_id = $1 LIMIT 1",
         [userId]
       ) as any[];
-      mode = Array.isArray(profileRows) && profileRows.length > 0
-        ? (profileRows[0].selected_trading_mode || "real")
-        : "real";
+      const persisted =
+        Array.isArray(profileRows) && profileRows.length > 0
+          ? profileRows[0].selected_trading_mode
+          : null;
+
+      const hasRealRows = await query(
+        "SELECT 1 FROM user_accounts WHERE user_id = $1 AND trading_mode = 'real' LIMIT 1",
+        [userId]
+      ) as any[];
+      const hasReal = Array.isArray(hasRealRows) && hasRealRows.length > 0;
+
+      if (hasReal) {
+        mode = persisted === "demo" ? "demo" : "real";
+      } else {
+        mode = persisted || "demo";
+      }
     }
 
     // Fetch account by user_id and trading_mode
@@ -567,6 +580,7 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
 
     if (Array.isArray(existingReal) && existingReal.length > 0) {
       const account = existingReal[0];
+      await query("UPDATE user_profiles SET selected_trading_mode = ? WHERE user_id = ?", ["real", userId]);
       return res.json({
         success: true,
         alreadyExists: true,
@@ -617,6 +631,8 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
       "INSERT INTO user_accounts (id, user_id, account_number, balance, equity, margin_free, available_balance, trading_mode, currency, account_status) VALUES (?, ?, ?, ?, ?, ?, ?, 'real', 'USD', 'active')",
       [uuidv4(), userId, realAccountNumber, 0, 0, 0, 0]
     );
+
+    await query("UPDATE user_profiles SET selected_trading_mode = ? WHERE user_id = ?", ["real", userId]);
 
     const message = settings.kycRequiredForRealAccount
       ? "Your real account has been activated successfully"
