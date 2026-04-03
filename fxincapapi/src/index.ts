@@ -29,7 +29,7 @@ import supportRoutes from "./routes/support.js";
 import healthRoutes from "./routes/health.js";
 import emailRoutes from "./routes/email.js";
 import { getAutoCloseTimeoutMinutes } from "./lib/trade-settings.js";
-import { autoCloseExpiredTrades } from "./lib/trading-engine.js";
+import { autoCloseExpiredTrades, processAllStopLossTakeProfit } from "./lib/trading-engine.js";
 
 const uploadsPath = path.resolve(__dirname, "../uploads");
 
@@ -149,6 +149,24 @@ setInterval(async () => {
     autoCloseWorkerRunning = false;
   }
 }, autoClosePollMs);
+
+const slTpPollMs = Number(process.env.SL_TP_POLL_MS || 4000);
+let slTpWorkerRunning = false;
+
+setInterval(async () => {
+  if (slTpWorkerRunning) return;
+  slTpWorkerRunning = true;
+  try {
+    const { checked, closed } = await processAllStopLossTakeProfit();
+    if (closed > 0) {
+      console.log(`[TRADE] SL/TP: closed ${closed} trade(s) (${checked} checked)`);
+    }
+  } catch (error) {
+    console.error("[TRADE] SL/TP worker failed:", error);
+  } finally {
+    slTpWorkerRunning = false;
+  }
+}, slTpPollMs);
 
 // 404 handler
 app.use((_req: Request, res: Response) => {

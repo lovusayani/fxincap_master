@@ -1,7 +1,7 @@
 import { Router, Response } from "express";
 import { AuthRequest, verifyToken } from "./auth.js";
-import { query } from "../lib/database.js";
-import { getAvailableBalance, getRequiredMargin } from "../lib/trading-engine.js";
+import { getConnection, query } from "../lib/database.js";
+import { getAvailableBalance, getRequiredMargin, lockBalance, unlockBalance } from "../lib/trading-engine.js";
 import { v4 as uuidv4 } from "uuid";
 
 const router: Router = Router();
@@ -20,6 +20,7 @@ async function ensureOrdersTable(): Promise<void> {
       price NUMERIC(15,5) NOT NULL,
       leverage INTEGER DEFAULT 100,
       status VARCHAR(16) DEFAULT 'pending',
+      margin_reserved NUMERIC(15,4),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -27,6 +28,7 @@ async function ensureOrdersTable(): Promise<void> {
 
   await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS symbol VARCHAR(20)`);
   await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS leverage INTEGER DEFAULT 100`);
+  await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS margin_reserved NUMERIC(15,4)`);
 }
 ensureOrdersTable().catch((e) => console.error("[orders] ensureOrdersTable failed:", e));
 
@@ -128,6 +130,13 @@ router.post("/", verifyToken, async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, error: balanceResult.error || "Unable to verify margin" });
     }
 
+    if (availableBalance <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "No free margin available. Close positions or cancel pending orders before placing new ones.",
+      });
+    }
+
     if (requiredMargin > availableBalance) {
       return res.status(400).json({
         success: false,
@@ -140,14 +149,31 @@ router.post("/", verifyToken, async (req: AuthRequest, res: Response) => {
       ? (symbolResults[0] as any).id
       : null;
 
-    // Create order
     const orderId = uuidv4();
-    await query(
-      `INSERT INTO orders 
-       (id, user_id, symbol, symbol_id, order_type, side, volume, price, leverage, status) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
-      [orderId, userId, symbol, symbolId, type, side, volume, price, parsedLeverage]
-    );
+    const conn = await getConnection();
+    try {
+      await conn.query("BEGIN");
+      const lockResult = await lockBalance(userId, requiredMargin, conn);
+      if (!lockResult.success) {
+        await conn.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          error: lockResult.error || "Could not reserve margin for this order.",
+        });
+      }
+      await conn.query(
+        `INSERT INTO orders 
+         (id, user_id, symbol, symbol_id, order_type, side, volume, price, leverage, status, margin_reserved) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10)`,
+        [orderId, userId, symbol, symbolId, type, side, volume, price, parsedLeverage, requiredMargin]
+      );
+      await conn.query("COMMIT");
+    } catch (insertErr: any) {
+      await conn.query("ROLLBACK").catch(() => {});
+      return res.status(500).json({ success: false, error: insertErr?.message || "Failed to create order" });
+    } finally {
+      conn.release();
+    }
 
     res.status(201).json({
       success: true,
@@ -178,8 +204,25 @@ router.delete("/:id", verifyToken, async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, error: "Can only cancel pending orders" });
     }
 
-    // Update order status
-    await query("UPDATE orders SET status = 'cancelled' WHERE id = $1", [id]);
+    const reserved = Number(order.margin_reserved ?? 0);
+    const conn = await getConnection();
+    try {
+      await conn.query("BEGIN");
+      await conn.query("UPDATE orders SET status = 'cancelled' WHERE id = $1", [id]);
+      if (reserved > 0) {
+        const unlockResult = await unlockBalance(userId as string, reserved, conn);
+        if (!unlockResult.success) {
+          await conn.query("ROLLBACK");
+          return res.status(500).json({ success: false, error: unlockResult.error || "Failed to release margin" });
+        }
+      }
+      await conn.query("COMMIT");
+    } catch (cancelErr: any) {
+      await conn.query("ROLLBACK").catch(() => {});
+      return res.status(500).json({ success: false, error: cancelErr?.message || "Cancel failed" });
+    } finally {
+      conn.release();
+    }
 
     res.json({ success: true, message: "Order cancelled" });
   } catch (error: any) {

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Header from "@/components/Header";
 import BottomTabs from "@/components/trading/BottomTabs";
 import MarketList from "@/components/trading/MarketList";
@@ -6,12 +6,17 @@ import TradingViewWidget from "@/components/trading/TradingViewWidget";
 import TradingLayout from "@/components/trading/layout/TradingLayout";
 import { useMarketStream } from "@/hooks/useMarketStream";
 import { useToast } from "@/hooks/use-toast";
-import { calculateLotFromAllocatedMargin, calculateRequiredMargin } from "@/lib/trading";
+import {
+  calculateLotFromAllocatedMargin,
+  calculateRequiredMargin,
+  validateStopLossForSide,
+} from "@/lib/trading";
 import { apiUrl } from "@/lib/api";
 import type {
   OrderBookRow,
   RecentTradeRow,
   TradingAccountBalance,
+  TicketBalancePreview,
 } from "@/components/trading/layout/types";
 
 interface AccountBalance extends TradingAccountBalance {}
@@ -31,7 +36,9 @@ function useAccountBalance(refreshKey: number): AccountBalance | null {
         });
         if (res.ok) {
           const data = await res.json();
-          if (data.success && data.balance) setBal(data.balance as AccountBalance);
+          if (data.success && data.balance) {
+            setBal(data.balance as AccountBalance);
+          }
         }
       } catch {}
     };
@@ -111,6 +118,7 @@ export default function Markets() {
   const [tp, setTp] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const leverageSyncedRef = useRef(false);
   const [allocationPercent, setAllocationPercent] = useState(25);
   const [chartInterval, setChartInterval] = useState("1H");
   const [chartDensity, setChartDensity] = useState<"normal" | "expanded">("expanded");
@@ -120,6 +128,15 @@ export default function Markets() {
   const { toast } = useToast();
   const prices = useMarketStream(ALL_SYMBOLS);
   const accountBal = useAccountBalance(refreshKey);
+
+  useEffect(() => {
+    if (leverageSyncedRef.current) return;
+    const lev = accountBal?.leverage;
+    if (lev != null && Number.isFinite(lev)) {
+      leverageSyncedRef.current = true;
+      setLeverage(Math.min(100, Math.max(1, Math.round(lev))));
+    }
+  }, [accountBal?.leverage]);
 
   const liveTick = prices[selectedSymbol];
   const currentSymbol = {
@@ -177,17 +194,73 @@ export default function Markets() {
     lastTickRef.current = 0;
   }, [selectedSymbol]);
 
+  /** Move allocation slider / presets → update lot. Live ticks no longer overwrite a manually entered lot. */
+  const handleAllocationPercentChange = useCallback(
+    (percent: number) => {
+      setAllocationPercent(percent);
+      const freeMargin = Number(accountBal?.freeMargin ?? 0);
+      const pending = parseFloat(pendingPrice) || 0;
+      const marketPrice = currentSymbol.ask || currentSymbol.bid || 0;
+      const effectivePrice = orderType === "Market" ? marketPrice : pending;
+      if (freeMargin <= 0 || effectivePrice <= 0 || leverage <= 0) return;
+      const allocationValue = (freeMargin * percent) / 100;
+      setLot(calculateLotFromAllocatedMargin(selectedSymbol, allocationValue, effectivePrice, leverage));
+    },
+    [
+      accountBal?.freeMargin,
+      pendingPrice,
+      currentSymbol.ask,
+      currentSymbol.bid,
+      orderType,
+      leverage,
+      selectedSymbol,
+    ]
+  );
+
+  /** When switching symbol, align lot to current allocation % (does not run on every price tick). */
   useEffect(() => {
     const freeMargin = Number(accountBal?.freeMargin ?? 0);
-    const marketPrice = currentSymbol.ask || currentSymbol.bid || 0;
     const pending = parseFloat(pendingPrice) || 0;
+    const marketPrice = currentSymbol.ask || currentSymbol.bid || 0;
     const effectivePrice = orderType === "Market" ? marketPrice : pending;
     if (freeMargin <= 0 || effectivePrice <= 0 || leverage <= 0) return;
-
     const allocationValue = (freeMargin * allocationPercent) / 100;
-    const computedLot = calculateLotFromAllocatedMargin(selectedSymbol, allocationValue, effectivePrice, leverage);
-    setLot(computedLot);
-  }, [accountBal?.freeMargin, allocationPercent, currentSymbol.ask, currentSymbol.bid, leverage, orderType, pendingPrice, selectedSymbol]);
+    setLot(calculateLotFromAllocatedMargin(selectedSymbol, allocationValue, effectivePrice, leverage));
+  }, [selectedSymbol]);
+
+  /** Footer Balance card: live estimate when ticket has valid price/lot (moves margin ↔ free margin like the panel above). */
+  const ticketBalancePreview: TicketBalancePreview | null = useMemo(() => {
+    if (!accountBal || lot <= 0 || leverage <= 0) return null;
+    const cur = accountBal.currency || "USD";
+    const pending = parseFloat(pendingPrice) || 0;
+    let additional = 0;
+    if (orderType === "Market") {
+      const { ask, bid } = currentSymbol;
+      if (ask <= 0 || bid <= 0) return null;
+      const mBuy = calculateRequiredMargin(selectedSymbol, lot, ask, leverage);
+      const mSell = calculateRequiredMargin(selectedSymbol, lot, bid, leverage);
+      additional = Math.max(mBuy, mSell);
+    } else {
+      if (pending <= 0) return null;
+      additional = calculateRequiredMargin(selectedSymbol, lot, pending, leverage);
+    }
+    return {
+      balance: accountBal.balance,
+      equity: accountBal.equity,
+      margin: accountBal.margin + additional,
+      freeMargin: accountBal.freeMargin - additional,
+      currency: cur,
+    };
+  }, [
+    accountBal,
+    currentSymbol.ask,
+    currentSymbol.bid,
+    orderType,
+    pendingPrice,
+    selectedSymbol,
+    lot,
+    leverage,
+  ]);
 
   const formatPrice = (price: number) => price.toFixed(price > 100 ? 2 : 5);
 
@@ -217,6 +290,26 @@ export default function Markets() {
 
     const requiredMargin = calculateRequiredMargin(selectedSymbol, lot, orderPrice, leverage);
     const availableFreeMargin = Number(accountBal?.freeMargin ?? 0);
+
+    if (availableFreeMargin <= 0) {
+      toast({
+        title: "No free margin",
+        description:
+          "Your free margin is zero or negative. Close positions or cancel pending orders before placing new trades.",
+      });
+      return;
+    }
+
+    if (!isPendingOrder && sl) {
+      const slNum = parseFloat(sl);
+      if (Number.isFinite(slNum)) {
+        const v = validateStopLossForSide(side, orderPrice, slNum);
+        if (!v.ok) {
+          toast({ title: "Invalid stop loss", description: v.message });
+          return;
+        }
+      }
+    }
 
     if (requiredMargin > availableFreeMargin) {
       toast({
@@ -333,7 +426,7 @@ export default function Markets() {
         leverage={leverage}
         setLeverage={setLeverage}
         allocationPercent={allocationPercent}
-        setAllocationPercent={setAllocationPercent}
+        setAllocationPercent={handleAllocationPercentChange}
         freeMargin={accountBal?.freeMargin ?? 0}
         sl={sl}
         setSl={setSl}
@@ -342,6 +435,7 @@ export default function Markets() {
         onBuy={() => placeOrder("BUY")}
         onSell={() => placeOrder("SELL")}
         submitting={submitting}
+        ticketBalancePreview={ticketBalancePreview}
       />
     </>
   );

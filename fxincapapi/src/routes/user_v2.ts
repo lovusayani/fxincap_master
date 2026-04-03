@@ -453,6 +453,7 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
           margin: 0,
           freeMargin: 0,
           currency: "USD",
+          leverage: 100,
         },
       });
     }
@@ -469,6 +470,11 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
     const computedAvailable = Math.max(0, totalBalance - lockedBalance);
     const availableBalance = storedAvailableBal > 0 ? storedAvailableBal : computedAvailable;
 
+    const levRows = await query("SELECT leverage FROM user_profiles WHERE user_id = $1 LIMIT 1", [userId]) as any[];
+    const profileLev =
+      Array.isArray(levRows) && levRows.length > 0 ? Number((levRows[0] as any).leverage || 100) : 100;
+    const accountLeverage = Math.min(100, Math.max(1, Number.isFinite(profileLev) ? profileLev : 100));
+
     res.json({
       success: true,
       balance: {
@@ -479,6 +485,7 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
         margin: lockedBalance,
         freeMargin: availableBalance,
         currency: account.currency || "USD",
+        leverage: accountLeverage,
       },
     });
   } catch (error: any) {

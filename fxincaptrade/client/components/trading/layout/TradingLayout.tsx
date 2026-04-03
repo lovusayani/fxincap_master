@@ -11,6 +11,7 @@ import type {
   MarketSymbolSummary,
   OrderBookRow,
   RecentTradeRow,
+  TicketBalancePreview,
   TradingAccountBalance,
 } from "./types";
 
@@ -63,6 +64,7 @@ interface TradingLayoutProps {
   onBuy: () => void;
   onSell: () => void;
   submitting: boolean;
+  ticketBalancePreview?: TicketBalancePreview | null;
 }
 
 export default function TradingLayout({
@@ -111,6 +113,7 @@ export default function TradingLayout({
   onBuy,
   onSell,
   submitting,
+  ticketBalancePreview,
 }: TradingLayoutProps) {
   const [showDesktopBottomPanel, setShowDesktopBottomPanel] = useState(true);
 
@@ -148,7 +151,7 @@ export default function TradingLayout({
             submitting={submitting}
             embedded
           />
-          <BalanceCard accountBalance={accountBalance} embedded />
+          <BalanceCard accountBalance={accountBalance} ticketPreview={ticketBalancePreview ?? null} embedded />
         </TabsContent>
 
         <TabsContent value="book" className="mt-0">

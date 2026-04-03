@@ -1,6 +1,6 @@
 import { Router, Response } from "express";
 import { AuthRequest, verifyToken } from "./auth.js";
-import { query } from "../lib/database.js";
+import { getConnection, query } from "../lib/database.js";
 import {
   validateTradeOpen,
   createTrade,
@@ -8,6 +8,8 @@ import {
   calculatePnL,
   getAvailableBalance,
   getAccountInfo,
+  checkAndExecuteStopLossTakeProfit,
+  processAllStopLossTakeProfit,
 } from "../lib/trading-engine.js";
 import {
   getOpenTradesByUser,
@@ -154,7 +156,6 @@ router.put("/:id/modify", verifyToken, async (req: AuthRequest, res: Response) =
     const tradeId = parseInt(req.params.id);
     const { stopLoss, takeProfit } = req.body;
 
-    // Get trade and verify ownership
     const trade = await getTradeById(tradeId);
     if (!trade) {
       return res.status(404).json({ success: false, error: "Trade not found" });
@@ -164,30 +165,80 @@ router.put("/:id/modify", verifyToken, async (req: AuthRequest, res: Response) =
       return res.status(403).json({ success: false, error: "Unauthorized" });
     }
 
-    // Update trade
-    const updates: string[] = [];
+    if (String(trade.status).toUpperCase() !== "OPEN") {
+      return res.status(400).json({ success: false, error: "Only open trades can be modified" });
+    }
+
+    const entry = Number(trade.entry_price);
+    const side = String(trade.side || "").toUpperCase();
+
+    /** Clear when null/empty string; otherwise must be a finite price > 0. */
+    const parseOptionalPrice = (v: unknown): "clear" | number | "invalid" => {
+      if (v === null || v === undefined || v === "") return "clear";
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) return "invalid";
+      return n;
+    };
+
+    const sets: string[] = [];
     const params: any[] = [];
+    let n = 1;
 
     if (stopLoss !== undefined) {
-      updates.push("stop_loss = ?");
-      params.push(stopLoss);
+      const parsed = parseOptionalPrice(stopLoss);
+      if (parsed === "invalid") {
+        return res.status(400).json({ success: false, error: "Invalid stop loss" });
+      }
+      const sl = parsed === "clear" ? null : parsed;
+      if (sl != null) {
+        if (side === "BUY" && sl >= entry) {
+          return res.status(400).json({ success: false, error: "For BUY, stop loss must be below entry price" });
+        }
+        if (side === "SELL" && sl <= entry) {
+          return res.status(400).json({ success: false, error: "For SELL, stop loss must be above entry price" });
+        }
+      }
+      sets.push(`stop_loss = $${n++}`);
+      params.push(sl);
     }
 
     if (takeProfit !== undefined) {
-      updates.push("take_profit = ?");
-      params.push(takeProfit);
+      const parsed = parseOptionalPrice(takeProfit);
+      if (parsed === "invalid") {
+        return res.status(400).json({ success: false, error: "Invalid take profit" });
+      }
+      const tp = parsed === "clear" ? null : parsed;
+      if (tp != null) {
+        if (side === "BUY" && tp <= entry) {
+          return res.status(400).json({ success: false, error: "For BUY, take profit must be above entry price" });
+        }
+        if (side === "SELL" && tp >= entry) {
+          return res.status(400).json({ success: false, error: "For SELL, take profit must be below entry price" });
+        }
+      }
+      sets.push(`take_profit = $${n++}`);
+      params.push(tp);
     }
 
-    if (updates.length === 0) {
+    if (sets.length === 0) {
       return res.status(400).json({ success: false, error: "No updates provided" });
     }
 
     params.push(tradeId);
+    const sql = `UPDATE trades SET ${sets.join(", ")} WHERE id = $${n} AND user_id = $${n + 1} AND status = 'OPEN'`;
+    params.push(userId);
 
-    const updateStr = updates.join(", ");
-    const result = await query(`UPDATE trades SET ${updateStr} WHERE id = ?`, params);
-
-    res.json({ success: (result as any).affectedRows > 0 });
+    const client = await getConnection();
+    try {
+      const result = await client.query(sql, params);
+      const ok = (result.rowCount ?? 0) > 0;
+      if (!ok) {
+        return res.status(400).json({ success: false, error: "Could not update trade" });
+      }
+      res.json({ success: true });
+    } finally {
+      client.release();
+    }
   } catch (error) {
     console.error("Error modifying trade:", error);
     res.status(500).json({ success: false, error: "Internal server error" });
@@ -261,20 +312,38 @@ router.get("/stats/summary", verifyToken, async (req: AuthRequest, res: Response
   }
 });
 
-// Admin: Check and execute SL/TP (called by price service)
+// Admin: Check and execute SL/TP for one trade (optional: called by price service)
 router.post("/admin/check-sl-tp", async (req: AuthRequest, res: Response) => {
   try {
-    // TODO: Add admin authentication
-    const { tradeId, currentPrice } = req.body;
+    const { tradeId, bid, ask, currentPrice } = req.body;
 
-    if (!tradeId || !currentPrice) {
-      return res.status(400).json({ success: false, error: "Missing parameters" });
+    if (!tradeId) {
+      return res.status(400).json({ success: false, error: "tradeId required" });
     }
 
-    // TODO: Implement checkAndExecuteStopLossTakeProfit
-    res.json({ success: true });
+    const b = Number(bid ?? currentPrice);
+    const a = Number(ask ?? currentPrice ?? bid);
+    if (!Number.isFinite(b) || b <= 0) {
+      return res.status(400).json({ success: false, error: "bid/currentPrice required" });
+    }
+    const bidPx = b;
+    const askPx = Number.isFinite(a) && a > 0 ? a : b;
+
+    const result = await checkAndExecuteStopLossTakeProfit(Number(tradeId), bidPx, askPx);
+    res.json({ success: true, ...result });
   } catch (error) {
     console.error("Error checking SL/TP:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+});
+
+// Admin: Run SL/TP scan for all open trades (same logic as background worker)
+router.post("/admin/process-sl-tp-all", async (_req: AuthRequest, res: Response) => {
+  try {
+    const out = await processAllStopLossTakeProfit();
+    res.json({ success: true, ...out });
+  } catch (error) {
+    console.error("Error processing SL/TP:", error);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });

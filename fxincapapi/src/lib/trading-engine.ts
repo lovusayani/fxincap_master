@@ -25,6 +25,14 @@ export interface Trade {
 function getContractSize(symbol: string): number {
   const upper = String(symbol || "").toUpperCase();
 
+  if (upper.includes("BTC")) {
+    return 1;
+  }
+
+  if (upper.includes("ETH")) {
+    return 1;
+  }
+
   if (upper.startsWith("XAU")) {
     return 100;
   }
@@ -374,9 +382,20 @@ export async function updateTradeRealtime(
   }
 }
 
+function tradePriceLevel(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Evaluate SL/TP using executable prices: close BUY at bid, close SELL at ask.
+ * (A single "mid" price misses real fill prices and can skip valid triggers.)
+ */
 export async function checkAndExecuteStopLossTakeProfit(
   tradeId: number,
-  currentPrice: number
+  bid: number,
+  ask: number
 ): Promise<{ executed: boolean; reason?: string }> {
   try {
     const trades = await query(
@@ -389,25 +408,35 @@ export async function checkAndExecuteStopLossTakeProfit(
     }
 
     const trade = trades[0] as any;
+    const side = String(trade.side || "").toUpperCase();
+    const sl = tradePriceLevel(trade.stop_loss);
+    const tp = tradePriceLevel(trade.take_profit);
 
-    if (trade.stop_loss) {
-      if (trade.side === "BUY" && currentPrice <= trade.stop_loss) {
-        const closeResult = await closeTrade(tradeId, currentPrice, "STOP_LOSS_HIT");
+    const bidPx = Number(bid);
+    const askPx = Number(ask);
+    const exitBuy = Number.isFinite(bidPx) && bidPx > 0 ? bidPx : 0;
+    const exitSell = Number.isFinite(askPx) && askPx > 0 ? askPx : exitBuy;
+
+    if (side === "BUY") {
+      const p = exitBuy;
+      if (!p) return { executed: false };
+      if (sl != null && p <= sl) {
+        const closeResult = await closeTrade(tradeId, p, "STOP_LOSS_HIT");
         return { executed: closeResult.success, reason: "STOP_LOSS_HIT" };
       }
-      if (trade.side === "SELL" && currentPrice >= trade.stop_loss) {
-        const closeResult = await closeTrade(tradeId, currentPrice, "STOP_LOSS_HIT");
-        return { executed: closeResult.success, reason: "STOP_LOSS_HIT" };
-      }
-    }
-
-    if (trade.take_profit) {
-      if (trade.side === "BUY" && currentPrice >= trade.take_profit) {
-        const closeResult = await closeTrade(tradeId, currentPrice, "TAKE_PROFIT_HIT");
+      if (tp != null && p >= tp) {
+        const closeResult = await closeTrade(tradeId, p, "TAKE_PROFIT_HIT");
         return { executed: closeResult.success, reason: "TAKE_PROFIT_HIT" };
       }
-      if (trade.side === "SELL" && currentPrice <= trade.take_profit) {
-        const closeResult = await closeTrade(tradeId, currentPrice, "TAKE_PROFIT_HIT");
+    } else if (side === "SELL") {
+      const p = exitSell;
+      if (!p) return { executed: false };
+      if (sl != null && p >= sl) {
+        const closeResult = await closeTrade(tradeId, p, "STOP_LOSS_HIT");
+        return { executed: closeResult.success, reason: "STOP_LOSS_HIT" };
+      }
+      if (tp != null && p <= tp) {
+        const closeResult = await closeTrade(tradeId, p, "TAKE_PROFIT_HIT");
         return { executed: closeResult.success, reason: "TAKE_PROFIT_HIT" };
       }
     }
@@ -416,6 +445,65 @@ export async function checkAndExecuteStopLossTakeProfit(
   } catch (error) {
     return { executed: false, reason: error instanceof Error ? error.message : "Error" };
   }
+}
+
+/** Base URL for fxincapws HTTP quotes (`GET /quote/:symbol`), default port 4040. */
+export function getWsQuoteBaseUrl(): string {
+  const raw = process.env.WS_QUOTE_BASE_URL || "http://127.0.0.1:4040";
+  return raw.replace(/\/$/, "");
+}
+
+/**
+ * Poll live quotes and close any open trades whose SL/TP is touched.
+ * Run on an interval from the API process (requires fxincapws reachable at WS_QUOTE_BASE_URL).
+ */
+export async function processAllStopLossTakeProfit(): Promise<{ checked: number; closed: number }> {
+  const rows = await query(
+    `SELECT id, symbol FROM trades 
+     WHERE status = 'OPEN' AND (stop_loss IS NOT NULL OR take_profit IS NOT NULL)`
+  );
+  const list = Array.isArray(rows) ? rows : [];
+  if (list.length === 0) {
+    return { checked: 0, closed: 0 };
+  }
+
+  const bySymbol = new Map<string, number[]>();
+  for (const t of list) {
+    const row = t as any;
+    const sym = String(row.symbol || "").trim();
+    const id = Number(row.id);
+    if (!sym || !Number.isFinite(id)) continue;
+    if (!bySymbol.has(sym)) bySymbol.set(sym, []);
+    bySymbol.get(sym)!.push(id);
+  }
+
+  const base = getWsQuoteBaseUrl();
+  let checked = 0;
+  let closed = 0;
+
+  for (const [symbol, tradeIds] of bySymbol) {
+    let bid = 0;
+    let ask = 0;
+    try {
+      const res = await fetch(`${base}/quote/${encodeURIComponent(symbol)}`);
+      if (!res.ok) continue;
+      const data = (await res.json()) as { bid?: unknown; ask?: unknown };
+      bid = Number(data.bid);
+      ask = Number(data.ask ?? data.bid);
+      if (!Number.isFinite(bid) || bid <= 0) continue;
+      if (!Number.isFinite(ask) || ask <= 0) ask = bid;
+    } catch {
+      continue;
+    }
+
+    for (const tradeId of tradeIds) {
+      checked += 1;
+      const r = await checkAndExecuteStopLossTakeProfit(tradeId, bid, ask);
+      if (r.executed) closed += 1;
+    }
+  }
+
+  return { checked, closed };
 }
 
 export async function autoCloseExpiredTrades(timeoutMinutes: number): Promise<number> {
