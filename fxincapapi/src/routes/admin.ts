@@ -779,7 +779,7 @@ router.get("/style-settings", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/style-settings", verifyToken, async (req: AuthRequest, res: Response) => {
+router.post("/style-settings", async (req: Request, res: Response) => {
   try {
     const {
       topbarBgColor,
