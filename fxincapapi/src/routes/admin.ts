@@ -1,4 +1,5 @@
 import { Router, Response, Request } from "express";
+import bcryptjs from "bcryptjs";
 import { AuthRequest, verifyToken } from "./auth.js";
 import { fetchUserById, fetchUsers, countUsers, deleteUserIfEligible } from "../services/adminUsers.js";
 import { fetchFundRequests, updateFundRequestStatus, fetchFundRequestById, completeDepositAndCredit, completeWithdrawalAndDebit, rejectWithdrawalAndCredit } from "../services/adminFunds.js";
@@ -1247,6 +1248,208 @@ router.post("/server-settings/reset-all-users", verifyToken, async (req: AuthReq
     return res.status(500).json({ success: false, error: error.message || "Failed to reset all users" });
   } finally {
     connection.release();
+  }
+});
+
+// ==========================================
+// Trader stats — counts by status
+// ==========================================
+router.get("/traders/stats", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const rows = await query(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'active'    THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN status = 'banned'    THEN 1 ELSE 0 END) AS banned,
+        SUM(CASE WHEN status NOT IN ('active','banned') OR status IS NULL THEN 1 ELSE 0 END) AS inactive
+      FROM users
+    `) as any[];
+    const r = Array.isArray(rows) && rows[0] ? rows[0] : {}
+    res.json({
+      success: true,
+      data: {
+        total:    Number(r.total    || 0),
+        active:   Number(r.active   || 0),
+        banned:   Number(r.banned   || 0),
+        inactive: Number(r.inactive || 0),
+      },
+    })
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// ==========================================
+// Traders — users with account balance
+// ==========================================
+router.get("/traders", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const page = Number(req.query.page) || 1;
+    const offset = (page - 1) * limit;
+    const search = (req.query.search as string) || "";
+    const status = (req.query.status as string) || "";
+    const sortBy = (req.query.sortBy as string) || "created_at";
+    const sortDir = (req.query.sortDir as string) === "asc" ? "ASC" : "DESC";
+
+    const allowedSort: Record<string, string> = {
+      name: "u.first_name",
+      email: "u.email",
+      status: "u.status",
+      createdAt: "u.created_at",
+      realBalance: "real_balance",
+    };
+    const orderCol = allowedSort[sortBy] || "u.created_at";
+
+    const whereParts: string[] = [];
+    const values: any[] = [];
+    if (search) {
+      const like = `%${search}%`;
+      whereParts.push("(u.email LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ? OR u.phone LIKE ?)");
+      values.push(like, like, like, like);
+    }
+    if (status) {
+      whereParts.push("u.status = ?");
+      values.push(status);
+    }
+    const where = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+
+    const rows = await query(`
+      SELECT u.id, u.email, u.first_name, u.last_name, u.phone, u.status, u.created_at,
+             COALESCE(SUM(CASE WHEN ua.trading_mode = 'real' THEN ua.balance ELSE 0 END), 0) AS real_balance,
+             COALESCE(SUM(CASE WHEN ua.trading_mode = 'demo' THEN ua.balance ELSE 0 END), 0) AS demo_balance
+      FROM users u
+      LEFT JOIN user_accounts ua ON ua.user_id = u.id
+      ${where}
+      GROUP BY u.id, u.email, u.first_name, u.last_name, u.phone, u.status, u.created_at
+      ORDER BY ${orderCol} ${sortDir}
+      LIMIT ${limit} OFFSET ${offset}
+    `, values) as any[];
+
+    const countRows = await query(`SELECT COUNT(*) AS total FROM users u ${where}`, values) as any[];
+    const total = Number(countRows?.[0]?.total || 0);
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      email: row.email,
+      firstName: row.first_name || "",
+      lastName: row.last_name || "",
+      phone: row.phone || null,
+      status: row.status || null,
+      realBalance: Number(row.real_balance || 0),
+      demoBalance: Number(row.demo_balance || 0),
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+    }));
+
+    res.json({ success: true, data, total, page, limit });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/traders/:userId/ban", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await query("UPDATE users SET status = 'banned' WHERE id = ?", [req.params.userId]);
+    res.json({ success: true, message: "Trader banned" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/traders/:userId/unban", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await query("UPDATE users SET status = 'active' WHERE id = ?", [req.params.userId]);
+    res.json({ success: true, message: "Trader unbanned" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/traders/:userId/change-password", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const newPassword = String(req.body?.newPassword || "").trim();
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ success: false, error: "Password must be at least 6 characters" });
+    }
+    const hashed = await bcryptjs.hash(newPassword, 10);
+    await query("UPDATE users SET password_hash = ? WHERE id = ?", [hashed, req.params.userId]);
+    res.json({ success: true, message: "Password changed" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/traders/:userId/deduct-fund", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const amount = Number(req.body?.amount);
+    const mode = String(req.body?.mode || "demo");
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, error: "Amount must be greater than 0" });
+    }
+    const accounts = await query(
+      "SELECT id, balance FROM user_accounts WHERE user_id = ? AND trading_mode = ? LIMIT 1",
+      [req.params.userId, mode]
+    ) as any[];
+    if (!Array.isArray(accounts) || accounts.length === 0) {
+      return res.status(404).json({ success: false, error: "Account not found" });
+    }
+    const account = accounts[0];
+    if (Number(account.balance || 0) < amount) {
+      return res.status(400).json({ success: false, error: "Insufficient balance" });
+    }
+    await query(
+      "UPDATE user_accounts SET balance = balance - ?, equity = equity - ?, available_balance = available_balance - ? WHERE id = ?",
+      [amount, amount, amount, account.id]
+    );
+    res.json({ success: true, message: `Deducted $${amount} from ${mode} account` });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// Sub Agents — admin_users list
+// ==========================================
+router.get("/sub-agents", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const page = Number(req.query.page) || 1;
+    const offset = (page - 1) * limit;
+    const search = (req.query.search as string) || "";
+
+    const whereParts: string[] = [];
+    const values: any[] = [];
+    if (search) {
+      const like = `%${search}%`;
+      whereParts.push("(email LIKE ? OR first_name LIKE ? OR last_name LIKE ?)");
+      values.push(like, like, like);
+    }
+    const where = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+
+    const rows = await query(`
+      SELECT id, email, first_name, last_name, status, email_verified, last_login_at, created_at
+      FROM admin_users ${where}
+      ORDER BY created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `, values) as any[];
+
+    const countRows = await query(`SELECT COUNT(*) AS total FROM admin_users ${where}`, values) as any[];
+    const total = Number(countRows?.[0]?.total || 0);
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      email: row.email,
+      firstName: row.first_name || "",
+      lastName: row.last_name || "",
+      status: row.status || null,
+      emailVerified: row.email_verified === true || row.email_verified === 1,
+      lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : null,
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+    }));
+
+    res.json({ success: true, data, total, page, limit });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

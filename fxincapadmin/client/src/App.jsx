@@ -22,6 +22,8 @@ import { Offers } from './pages/Offers'
 import { Wallet } from './pages/Wallet'
 import { ServerSettings } from './pages/ServerSettings'
 import { UserSettings } from './pages/UserSettings'
+import { TradersList } from './pages/TradersList'
+import { SubAgentsList } from './pages/SubAgentsList'
 
 function App() {
   return (
@@ -51,6 +53,8 @@ function App() {
             <Route path="members/list" element={<MemberList />} />
             <Route path="members/profile" element={<MemberProfile />} />
             <Route path="members/profile/:id" element={<MemberProfile />} />
+            <Route path="members/traders" element={<TradersList />} />
+            <Route path="members/sub-agents" element={<SubAgentsList />} />
             <Route path="all-pendings" element={<AllPendings />} />
             <Route path="wallet" element={<Wallet />} />
             <Route path="pending-deposit/:id" element={<PendingDepositDetail />} />

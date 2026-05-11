@@ -158,6 +158,8 @@ const menus = [
     label: 'Members', icon: 'group', children: [
       { label: 'Member List', path: '/members/list' },
       { label: 'Member Profile', path: '/members/profile' },
+      { label: 'Traders', path: '/members/traders' },
+      { label: 'Sub Agents', path: '/members/sub-agents' },
     ]
   },
   {
