@@ -63,7 +63,7 @@ app.use(
     changeOrigin: true,
     logLevel: 'debug',
     onProxyReq: (proxyReq, req) => {
-      if (ADMIN_API_TOKEN) {
+      if (ADMIN_API_TOKEN && !req.headers.authorization) {
         proxyReq.setHeader('authorization', `Bearer ${ADMIN_API_TOKEN}`);
       }
       forwardJsonBody(proxyReq, req);
@@ -83,7 +83,7 @@ app.use(
     changeOrigin: true,
     logLevel: 'debug',
     onProxyReq: (proxyReq, req) => {
-      if (ADMIN_API_TOKEN) {
+      if (ADMIN_API_TOKEN && !req.headers.authorization) {
         proxyReq.setHeader('authorization', `Bearer ${ADMIN_API_TOKEN}`);
       }
       forwardJsonBody(proxyReq, req);
@@ -102,7 +102,7 @@ app.use(
     changeOrigin: true,
     logLevel: 'debug',
     onProxyReq: (proxyReq, req) => {
-      if (ADMIN_API_TOKEN) {
+      if (ADMIN_API_TOKEN && !req.headers.authorization) {
         proxyReq.setHeader('authorization', `Bearer ${ADMIN_API_TOKEN}`);
       }
       forwardJsonBody(proxyReq, req);
