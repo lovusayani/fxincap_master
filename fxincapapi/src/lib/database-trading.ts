@@ -1,9 +1,11 @@
-import { query } from "./database.js";
+import { query, getConnection } from "./database.js";
 
 export async function getOpenTradesByUser(userId: string): Promise<any[]> {
   try {
     const trades = await query(
-      `SELECT * FROM trades WHERE user_id = ? AND status = 'OPEN' ORDER BY opened_at DESC`,
+      `SELECT id, symbol, side, volume, entry_price, current_price, take_profit, stop_loss,
+              leverage, pnl, pnl_percentage, locked_balance, opened_at, status
+       FROM trades WHERE user_id = $1 AND status = 'OPEN' ORDER BY opened_at DESC`,
       [userId]
     );
     return Array.isArray(trades) ? trades : [];
@@ -15,7 +17,13 @@ export async function getOpenTradesByUser(userId: string): Promise<any[]> {
 
 export async function getTradeById(tradeId: number): Promise<any | null> {
   try {
-    const trades = await query(`SELECT * FROM trades WHERE id = ?`, [tradeId]);
+    const trades = await query(
+      `SELECT id, user_id, symbol, side, volume, entry_price, current_price, take_profit,
+              stop_loss, leverage, locked_balance, pnl, pnl_percentage, status,
+              close_price, final_pnl, opened_at, closed_at, closing_reason
+       FROM trades WHERE id = $1`,
+      [tradeId]
+    );
     return Array.isArray(trades) && trades.length > 0 ? trades[0] : null;
   } catch (error) {
     console.error("Failed to get trade:", error);
@@ -33,9 +41,13 @@ export async function getTradeHistory(
     const safeOffset = Math.max(0, Number.isFinite(offset) ? Math.floor(offset) : 0);
 
     const trades = await query(
-      `SELECT * FROM trades WHERE user_id = ? AND status IN ('CLOSED', 'CANCELLED') 
-       ORDER BY closed_at DESC LIMIT ${safeLimit} OFFSET ${safeOffset}`,
-      [userId]
+      `SELECT id, symbol, side, volume, entry_price, close_price, final_pnl, pnl_percentage,
+              leverage, opened_at, closed_at, closing_reason, status
+       FROM trades
+       WHERE user_id = $1 AND status IN ('CLOSED', 'CANCELLED')
+       ORDER BY closed_at DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, safeLimit, safeOffset]
     );
     return Array.isArray(trades) ? trades : [];
   } catch (error) {
@@ -55,7 +67,7 @@ export async function getTradeStatistics(userId: string): Promise<{
 }> {
   try {
     const stats = await query(
-      `SELECT 
+      `SELECT
         COUNT(*) as total,
         SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END) as open_count,
         SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END) as closed_count,
@@ -63,54 +75,51 @@ export async function getTradeStatistics(userId: string): Promise<{
         SUM(CASE WHEN status = 'CLOSED' THEN final_pnl ELSE 0 END) as total_pnl,
         AVG(CASE WHEN status = 'CLOSED' AND final_pnl > 0 THEN final_pnl END) as avg_win,
         AVG(CASE WHEN status = 'CLOSED' AND final_pnl < 0 THEN final_pnl END) as avg_loss
-       FROM trades WHERE user_id = ?`,
+       FROM trades WHERE user_id = $1`,
       [userId]
     );
 
     const result = (stats as any)[0];
-    const closedCount = result.closed_count || 0;
+    const closedCount = Number(result.closed_count) || 0;
 
     return {
-      totalTrades: result.total || 0,
-      openTrades: result.open_count || 0,
+      totalTrades: Number(result.total) || 0,
+      openTrades: Number(result.open_count) || 0,
       closedTrades: closedCount,
-      winRate: closedCount > 0 ? ((result.win_count || 0) / closedCount) * 100 : 0,
-      totalPnL: result.total_pnl || 0,
-      avgWin: result.avg_win || 0,
-      avgLoss: result.avg_loss || 0,
+      winRate: closedCount > 0 ? ((Number(result.win_count) || 0) / closedCount) * 100 : 0,
+      totalPnL: Number(result.total_pnl) || 0,
+      avgWin: Number(result.avg_win) || 0,
+      avgLoss: Number(result.avg_loss) || 0,
     };
   } catch (error) {
     console.error("Failed to get trade statistics:", error);
-    return {
-      totalTrades: 0,
-      openTrades: 0,
-      closedTrades: 0,
-      winRate: 0,
-      totalPnL: 0,
-      avgWin: 0,
-      avgLoss: 0,
-    };
+    return { totalTrades: 0, openTrades: 0, closedTrades: 0, winRate: 0, totalPnL: 0, avgWin: 0, avgLoss: 0 };
   }
 }
 
+// Uses getConnection() so callers get the real rowCount, not result.rows.
 export async function updateTradeCurrentPrice(
   tradeId: number,
   currentPrice: number
 ): Promise<boolean> {
+  const client = await getConnection();
   try {
-    const result = await query(
-      `UPDATE trades SET current_price = ?, pnl_percentage = 
-        CASE 
-          WHEN side = 'BUY' THEN ((? - entry_price) / entry_price) * 100
-          ELSE ((entry_price - ?) / entry_price) * 100
-        END
-       WHERE id = ?`,
-      [currentPrice, currentPrice, currentPrice, tradeId]
+    const result = await client.query(
+      `UPDATE trades
+       SET current_price = $1,
+           pnl_percentage = CASE
+             WHEN side = 'BUY' THEN (($1 - entry_price) / entry_price) * 100
+             ELSE ((entry_price - $1) / entry_price) * 100
+           END
+       WHERE id = $2`,
+      [currentPrice, tradeId]
     );
-    return (result as any).affectedRows > 0;
+    return (result.rowCount ?? 0) > 0;
   } catch (error) {
     console.error("Failed to update trade current price:", error);
     return false;
+  } finally {
+    client.release();
   }
 }
 
@@ -119,22 +128,24 @@ export async function updateTradeStatus(
   status: string,
   closingReason?: string
 ): Promise<boolean> {
+  const client = await getConnection();
   try {
-    const updates = [status, tradeId];
-    let query_str = `UPDATE trades SET status = ?`;
-
+    let sql: string;
+    let params: any[];
     if (closingReason) {
-      query_str += `, closing_reason = ?, closed_at = NOW()`;
-      updates.splice(1, 0, closingReason);
+      sql = `UPDATE trades SET status = $1, closing_reason = $2, closed_at = NOW() WHERE id = $3`;
+      params = [status, closingReason, tradeId];
+    } else {
+      sql = `UPDATE trades SET status = $1 WHERE id = $2`;
+      params = [status, tradeId];
     }
-
-    query_str += ` WHERE id = ?`;
-
-    const result = await query(query_str, updates);
-    return (result as any).affectedRows > 0;
+    const result = await client.query(sql, params);
+    return (result.rowCount ?? 0) > 0;
   } catch (error) {
     console.error("Failed to update trade status:", error);
     return false;
+  } finally {
+    client.release();
   }
 }
 
@@ -145,16 +156,19 @@ export async function insertTradeLog(
   oldValue: any,
   newValue: any
 ): Promise<boolean> {
+  const client = await getConnection();
   try {
-    const result = await query(
+    const result = await client.query(
       `INSERT INTO trade_logs (trade_id, user_id, action, old_value, new_value)
-       VALUES (?, ?, ?, ?, ?)`,
+       VALUES ($1, $2, $3, $4, $5)`,
       [tradeId, userId, action, JSON.stringify(oldValue), JSON.stringify(newValue)]
     );
-    return (result as any).affectedRows > 0;
+    return (result.rowCount ?? 0) > 0;
   } catch (error) {
     console.error("Failed to insert trade log:", error);
     return false;
+  } finally {
+    client.release();
   }
 }
 
@@ -163,17 +177,19 @@ export async function updateUserBalance(
   amount: number,
   type: "ADD" | "SUBTRACT" = "ADD"
 ): Promise<boolean> {
+  const client = await getConnection();
   try {
     const operator = type === "ADD" ? "+" : "-";
-    const result = await query(
-      `UPDATE user_accounts SET available_balance = available_balance ${operator} ? 
-       WHERE user_id = ?`,
+    const result = await client.query(
+      `UPDATE user_accounts SET available_balance = available_balance ${operator} $1 WHERE user_id = $2`,
       [amount, userId]
     );
-    return (result as any).affectedRows > 0;
+    return (result.rowCount ?? 0) > 0;
   } catch (error) {
     console.error("Failed to update user balance:", error);
     return false;
+  } finally {
+    client.release();
   }
 }
 
@@ -182,17 +198,19 @@ export async function updateLockedBalance(
   amount: number,
   type: "ADD" | "SUBTRACT" = "ADD"
 ): Promise<boolean> {
+  const client = await getConnection();
   try {
     const operator = type === "ADD" ? "+" : "-";
-    const result = await query(
-      `UPDATE user_accounts SET locked_balance = locked_balance ${operator} ? 
-       WHERE user_id = ?`,
+    const result = await client.query(
+      `UPDATE user_accounts SET locked_balance = locked_balance ${operator} $1 WHERE user_id = $2`,
       [amount, userId]
     );
-    return (result as any).affectedRows > 0;
+    return (result.rowCount ?? 0) > 0;
   } catch (error) {
     console.error("Failed to update locked balance:", error);
     return false;
+  } finally {
+    client.release();
   }
 }
 
@@ -203,7 +221,7 @@ export async function getUserAccountBalance(userId: string): Promise<{
 }> {
   try {
     const accounts = await query(
-      `SELECT available_balance, locked_balance FROM user_accounts WHERE user_id = ?`,
+      `SELECT available_balance, locked_balance FROM user_accounts WHERE user_id = $1`,
       [userId]
     );
 
@@ -212,11 +230,9 @@ export async function getUserAccountBalance(userId: string): Promise<{
     }
 
     const account = accounts[0] as any;
-    return {
-      available: account.available_balance || 0,
-      locked: account.locked_balance || 0,
-      total: (account.available_balance || 0) + (account.locked_balance || 0),
-    };
+    const available = Number(account.available_balance) || 0;
+    const locked = Number(account.locked_balance) || 0;
+    return { available, locked, total: available + locked };
   } catch (error) {
     console.error("Failed to get user account balance:", error);
     return { available: 0, locked: 0, total: 0 };
@@ -225,20 +241,20 @@ export async function getUserAccountBalance(userId: string): Promise<{
 
 export async function getAccountWithPositions(userId: string): Promise<any> {
   try {
-    const accounts = await query(
-      `SELECT * FROM user_accounts WHERE user_id = ?`,
-      [userId]
-    );
+    const [accounts, positions] = await Promise.all([
+      query(
+        `SELECT balance, available_balance, locked_balance, created_at
+         FROM user_accounts WHERE user_id = $1`,
+        [userId]
+      ),
+      query(
+        `SELECT id, symbol, side, volume, entry_price, current_price, pnl, pnl_percentage, status
+         FROM trades WHERE user_id = $1 AND status = 'OPEN'`,
+        [userId]
+      ),
+    ]);
 
-    const positions = await query(
-      `SELECT id, symbol, side, volume, entry_price, current_price, pnl, pnl_percentage, status 
-       FROM trades WHERE user_id = ? AND status = 'OPEN'`,
-      [userId]
-    );
-
-    if (!Array.isArray(accounts) || accounts.length === 0) {
-      return null;
-    }
+    if (!Array.isArray(accounts) || accounts.length === 0) return null;
 
     return {
       ...accounts[0],
@@ -249,4 +265,3 @@ export async function getAccountWithPositions(userId: string): Promise<any> {
     return null;
   }
 }
-

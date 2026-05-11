@@ -619,35 +619,29 @@ export async function getAccountInfo(
   error?: string;
 }> {
   try {
-    const accountResults = await query(
-      `SELECT balance, available_balance, locked_balance FROM user_accounts WHERE user_id = $1`,
-      [userId]
-    );
+    const [accountResults, tradeResults] = await Promise.all([
+      query(
+        `SELECT balance, available_balance, locked_balance FROM user_accounts WHERE user_id = $1`,
+        [userId]
+      ),
+      query(
+        `SELECT COALESCE(SUM(final_pnl), 0) as total_pnl FROM trades WHERE user_id = $1 AND status = 'CLOSED'`,
+        [userId]
+      ),
+    ]);
 
     if (!Array.isArray(accountResults) || accountResults.length === 0) {
       return { success: false, error: "Account not found" };
     }
 
     const account = accountResults[0] as any;
-
-    const tradeResults = await query(
-      `SELECT COALESCE(SUM(final_pnl), 0) as total_pnl FROM trades WHERE user_id = $1 AND status = 'CLOSED'`,
-      [userId]
-    );
-
     const totalPnL = Number((tradeResults as any)[0]?.total_pnl) || 0;
     const balance = Number(account.balance) || 0;
     const lockedBalance = Number(account.locked_balance) || 0;
     const storedAvailable = Number(account.available_balance) || 0;
     const availableBalance = Math.max(0, Math.max(storedAvailable, balance - lockedBalance));
 
-    return {
-      success: true,
-      balance,
-      lockedBalance,
-      availableBalance,
-      totalPnL,
-    };
+    return { success: true, balance, lockedBalance, availableBalance, totalPnL };
   } catch (error) {
     return {
       success: false,

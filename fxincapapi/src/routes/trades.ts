@@ -298,6 +298,37 @@ router.get("/account/info", verifyToken, async (req: AuthRequest, res: Response)
   }
 });
 
+// Dashboard: open trades + stats + account info in one parallel request
+router.get("/dashboard", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+    const [trades, stats, accountInfo] = await Promise.all([
+      getOpenTradesByUser(userId),
+      getTradeStatistics(userId),
+      getAccountInfo(userId),
+    ]);
+
+    res.json({
+      success: true,
+      openTrades: trades,
+      stats,
+      account: accountInfo.success
+        ? {
+            balance: accountInfo.balance,
+            availableBalance: accountInfo.availableBalance,
+            lockedBalance: accountInfo.lockedBalance,
+            totalPnL: accountInfo.totalPnL,
+          }
+        : null,
+    });
+  } catch (error) {
+    console.error("Error loading dashboard:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+});
+
 // Get trade statistics
 router.get("/stats/summary", verifyToken, async (req: AuthRequest, res: Response) => {
   try {
