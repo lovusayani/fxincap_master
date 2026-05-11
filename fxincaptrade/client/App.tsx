@@ -520,6 +520,11 @@ export default function App() {
       localStorage.setItem("platform_logo_dark", data.logoDarkUrl || "");
       localStorage.setItem("platform_logo_square", data.logoSquareUrl || "");
       window.dispatchEvent(new CustomEvent("platform-logos-updated"));
+
+      if (data.platformName) {
+        localStorage.setItem("platform_name", data.platformName);
+        window.dispatchEvent(new CustomEvent("platform-name-updated"));
+      }
     };
 
     const fetchStyleSettings = async () => {

@@ -526,6 +526,44 @@ const ensureStyleSettingsTable = async () => {
   `);
 };
 
+// Generic key-value config table — app user always owns this (created fresh).
+// Avoids ALTER TABLE on style_settings which may be owned by a different DB user.
+const ensurePlatformConfigTable = async () => {
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS platform_config (
+        key   VARCHAR(64) PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT ''
+      )
+    `);
+  } catch {
+    // Best effort — degrade gracefully if permissions are restricted.
+  }
+};
+
+const getStoredPlatformName = async (): Promise<string> => {
+  try {
+    await ensurePlatformConfigTable();
+    const rows = await query(`SELECT value FROM platform_config WHERE key = 'platform_name'`);
+    return Array.isArray(rows) && rows.length > 0 ? (rows as any[])[0].value || "SuimFx" : "SuimFx";
+  } catch {
+    return "SuimFx";
+  }
+};
+
+const saveStoredPlatformName = async (name: string): Promise<void> => {
+  try {
+    await ensurePlatformConfigTable();
+    await query(
+      `INSERT INTO platform_config (key, value) VALUES ('platform_name', $1)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [name]
+    );
+  } catch {
+    // Non-fatal — other settings still save normally.
+  }
+};
+
 const getStoredShadcnTheme = async () => {
   try {
     await ensureStyleSettingsExtrasTable();
@@ -680,7 +718,10 @@ router.get("/style-settings", async (req: Request, res: Response) => {
   try {
     await ensureStyleSettingsTable();
 
-    const shadcnTheme = await getStoredShadcnTheme();
+    const [shadcnTheme, platformName] = await Promise.all([
+      getStoredShadcnTheme(),
+      getStoredPlatformName(),
+    ]);
     const storedLogos = getStoredLogoSettings();
     const settings = await query(`
       SELECT
@@ -695,10 +736,10 @@ router.get("/style-settings", async (req: Request, res: Response) => {
       FROM style_settings
       LIMIT 1
     `);
-    
+
     if (!settings || (settings as any[]).length === 0) {
-      return res.json({ 
-        success: true, 
+      return res.json({
+        success: true,
         data: {
           topbarBgColor: "default",
           themeMode: "default",
@@ -707,13 +748,14 @@ router.get("/style-settings", async (req: Request, res: Response) => {
           fontColorMode: "auto",
           glossyEffect: "on",
           buttonTextColor: "white",
+          platformName,
           logoLightUrl: toPublicLogoUrl(req, storedLogos.light),
           logoDarkUrl: toPublicLogoUrl(req, storedLogos.dark),
           logoSquareUrl: toPublicLogoUrl(req, storedLogos.square),
         }
       });
     }
-    
+
     const data = (settings as any[])[0];
     res.json({
       success: true,
@@ -726,6 +768,7 @@ router.get("/style-settings", async (req: Request, res: Response) => {
         fontColorMode: data.font_color_mode || "auto",
         glossyEffect: data.glossy_effect || "on",
         buttonTextColor: data.button_text_color || "white",
+        platformName,
         logoLightUrl: toPublicLogoUrl(req, storedLogos.light),
         logoDarkUrl: toPublicLogoUrl(req, storedLogos.dark),
         logoSquareUrl: toPublicLogoUrl(req, storedLogos.square),
@@ -747,8 +790,10 @@ router.post("/style-settings", verifyToken, async (req: AuthRequest, res: Respon
       buttonTextColor,
       fontColorMode,
       glossyEffect,
+      platformName,
     } = req.body;
     await ensureStyleSettingsTable();
+    const nextPlatformName = String(platformName || "SuimFx").trim().slice(0, 128) || "SuimFx";
     const incomingTopbar = String(topbarBgColor || headerColor || "");
     const nextTopbarBgColor = ["default", "red", "blue", "green", "purple", "dark", "light"].includes(incomingTopbar)
       ? incomingTopbar
@@ -785,10 +830,13 @@ router.post("/style-settings", verifyToken, async (req: AuthRequest, res: Respon
         [nextTopbarBgColor, nextTopbarBgColor, nextThemeMode, nextFontSize, nextButtonTextColor, nextFontColorMode, nextGlossyEffect]
       );
     }
-    await saveStoredShadcnTheme(nextShadcnTheme);
-    
-    res.json({ 
-      success: true, 
+    await Promise.all([
+      saveStoredShadcnTheme(nextShadcnTheme),
+      saveStoredPlatformName(nextPlatformName),
+    ]);
+
+    res.json({
+      success: true,
       data: {
         topbarBgColor: nextTopbarBgColor,
         headerColor: nextTopbarBgColor,
@@ -798,8 +846,9 @@ router.post("/style-settings", verifyToken, async (req: AuthRequest, res: Respon
         fontColorMode: nextFontColorMode,
         glossyEffect: nextGlossyEffect,
         buttonTextColor: nextButtonTextColor,
+        platformName: nextPlatformName,
       },
-      message: "Settings saved successfully" 
+      message: "Settings saved successfully"
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });

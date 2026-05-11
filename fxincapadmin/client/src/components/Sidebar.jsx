@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import styled from 'styled-components'
 import { theme } from '../styles/theme'
 import { useNavigate } from 'react-router-dom'
@@ -277,7 +277,26 @@ const Chevron = styled.span`
 
 export const Sidebar = ({ expanded, onToggle }) => {
   const [openIndex, setOpenIndex] = useState(null)
+  const [appName, setAppName] = useState(() => localStorage.getItem('platform_name') || 'SuimFx')
   const navigate = useNavigate()
+
+  useEffect(() => {
+    // Fetch on mount so name is fresh even before visiting settings page
+    fetch('/api/admin/style-settings')
+      .then((r) => r.json())
+      .catch(() => null)
+      .then((json) => {
+        if (json?.success && json?.data?.platformName) {
+          const name = json.data.platformName
+          localStorage.setItem('platform_name', name)
+          setAppName(name)
+        }
+      })
+
+    const onUpdate = () => setAppName(localStorage.getItem('platform_name') || 'SuimFx')
+    window.addEventListener('platform-name-updated', onUpdate)
+    return () => window.removeEventListener('platform-name-updated', onUpdate)
+  }, [])
 
   const handleToggleItem = (idx, hasChildren) => {
     if (!hasChildren) return
@@ -303,7 +322,7 @@ export const Sidebar = ({ expanded, onToggle }) => {
         <LogoArea>
           <img src="/logo_white.png" alt="SUIMFX Logo" />
         </LogoArea>
-        <LogoText $visible={expanded}>SuimFx</LogoText>
+        <LogoText $visible={expanded}>{appName}</LogoText>
       </LogoContainer>
 
       <MenuList>

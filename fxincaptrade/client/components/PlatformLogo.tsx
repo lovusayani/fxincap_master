@@ -17,6 +17,7 @@ function readLogos() {
 
 export default function PlatformLogo({ mode, isDark, className }: Props) {
     const [logos, setLogos] = useState(readLogos);
+    const [appName, setAppName] = useState(() => localStorage.getItem("platform_name") || "SuimFx");
     const [isCompactHeader, setIsCompactHeader] = useState(
         () => typeof window !== "undefined" && window.innerWidth < 640
     );
@@ -25,6 +26,12 @@ export default function PlatformLogo({ mode, isDark, className }: Props) {
         const handler = () => setLogos(readLogos());
         window.addEventListener("platform-logos-updated", handler);
         return () => window.removeEventListener("platform-logos-updated", handler);
+    }, []);
+
+    useEffect(() => {
+        const handler = () => setAppName(localStorage.getItem("platform_name") || "SuimFx");
+        window.addEventListener("platform-name-updated", handler);
+        return () => window.removeEventListener("platform-name-updated", handler);
     }, []);
 
     useEffect(() => {
@@ -38,7 +45,7 @@ export default function PlatformLogo({ mode, isDark, className }: Props) {
     const dark = isDark ?? (document.documentElement.getAttribute("data-theme") !== "light");
     const wideSrc = dark ? logos.dark : logos.light;
     const src = mode === "header" && isCompactHeader && logos.square ? logos.square : wideSrc;
-    const fallback = "SPRS TRADE";
+    const fallback = appName;
 
     if (mode === "header") {
         return src ? (

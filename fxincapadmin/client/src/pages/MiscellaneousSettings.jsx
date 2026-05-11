@@ -19,6 +19,9 @@ export const MiscellaneousSettings = () => {
   const [unsavedChanges, setUnsavedChanges] = useState(false)
   const [logos, setLogos] = useState({ light: null, dark: null, square: null })
   const [logoUploading, setLogoUploading] = useState({ light: false, dark: false, square: false })
+  const [platformName, setPlatformName] = useState('SuimFx')
+  const [nameSaving, setNameSaving] = useState(false)
+  const [nameMessage, setNameMessage] = useState(null)
   const logoInputLight = useRef(null)
   const logoInputDark = useRef(null)
   const logoInputSquare = useRef(null)
@@ -47,6 +50,10 @@ export const MiscellaneousSettings = () => {
           dark: data.data.logoDarkUrl || null,
           square: data.data.logoSquareUrl || null,
         })
+        const name = data.data.platformName || 'SuimFx'
+        setPlatformName(name)
+        localStorage.setItem('platform_name', name)
+        window.dispatchEvent(new CustomEvent('platform-name-updated'))
 
         setMessage(null)
       } catch (error) {
@@ -86,6 +93,31 @@ export const MiscellaneousSettings = () => {
       setMessage({ type: 'error', text: error?.message || 'Failed to save settings' })
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleSaveAppName = async () => {
+    const trimmed = platformName.trim()
+    if (!trimmed) { setNameMessage({ type: 'error', text: 'App name cannot be empty' }); return }
+    try {
+      setNameSaving(true)
+      const response = await fetch('/api/admin/style-settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ ...settings, platformName: trimmed }),
+      })
+      const data = await response.json().catch(() => null)
+      if (!response.ok || !data?.success) throw new Error(data?.error || 'Failed to save')
+      localStorage.setItem('platform_name', trimmed)
+      window.dispatchEvent(new CustomEvent('platform-name-updated'))
+      setNameMessage({ type: 'success', text: 'App name updated' })
+    } catch (error) {
+      setNameMessage({ type: 'error', text: error?.message || 'Failed to save app name' })
+    } finally {
+      setNameSaving(false)
     }
   }
 
@@ -224,6 +256,51 @@ export const MiscellaneousSettings = () => {
                 </div>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>App Name / Title</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-xs text-slate-400">
+              This name appears in the sidebar and as the fallback title wherever no logo is set — across Admin and Trade platform.
+            </p>
+
+            {nameMessage && (
+              <div
+                className={`rounded-md border px-3 py-2 text-xs ${
+                  nameMessage.type === 'success'
+                    ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
+                    : 'border-rose-500/70 bg-rose-500/10 text-rose-300'
+                }`}
+              >
+                {nameMessage.text}
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-200">App Name</label>
+              <input
+                type="text"
+                value={platformName}
+                maxLength={64}
+                onChange={(e) => { setPlatformName(e.target.value); setNameMessage(null) }}
+                className="w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-blue-500 focus:outline-none"
+                placeholder="e.g. SuimFx"
+              />
+              <p className="mt-1 text-xs text-slate-500">{platformName.length}/64 characters</p>
+            </div>
+
+            <div className="rounded-md border border-slate-700 bg-slate-900/60 px-4 py-3">
+              <p className="mb-1 text-xs text-slate-500">Preview</p>
+              <span className="text-lg font-bold text-slate-100">{platformName || 'SuimFx'}</span>
+            </div>
+
+            <Button onClick={handleSaveAppName} disabled={nameSaving || !platformName.trim()}>
+              {nameSaving ? 'Saving...' : 'Save App Name'}
+            </Button>
           </CardContent>
         </Card>
 
