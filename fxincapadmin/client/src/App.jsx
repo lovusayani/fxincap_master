@@ -17,6 +17,8 @@ import { PendingDepositDetail } from './pages/PendingDepositDetail'
 import { PendingWithdrawalDetail } from './pages/PendingWithdrawalDetail'
 import { UserKycStatus } from './pages/UserKycStatus'
 import { TradeSetting } from './pages/TradeSetting'
+import { GroupSetting } from './pages/GroupSetting'
+import { ForexCharges } from './pages/ForexCharges'
 import { MiscellaneousSettings } from './pages/MiscellaneousSettings'
 import { Offers } from './pages/Offers'
 import { Wallet } from './pages/Wallet'
@@ -61,6 +63,8 @@ function App() {
             <Route path="pending-withdrawal/:id" element={<PendingWithdrawalDetail />} />
             <Route path="user-kyc" element={<UserKycStatus />} />
             <Route path="trade-setting" element={<TradeSetting />} />
+            <Route path="group-setting" element={<GroupSetting />} />
+            <Route path="forex-charges" element={<ForexCharges />} />
             <Route path="market/offers" element={<Offers />} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="server-settings" element={<ServerSettings />} />

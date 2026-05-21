@@ -142,29 +142,29 @@ const Footer = styled.div`
 const menus = [
   { label: 'Dashboard', icon: 'dashboard' },
   {
-    label: 'Reminders', icon: 'notifications', children: [
-      { label: 'Quick Note' },
-      { label: 'Alert Settings' },
-    ]
-  },
-  {
-    label: 'Reports', icon: 'analytics', children: [
-      { label: 'Transactions' },
-      { label: 'Balance Sheet' },
-      { label: 'Report2' },
-    ]
-  },
-  {
     label: 'Members', icon: 'group', children: [
       { label: 'Member List', path: '/members/list' },
       { label: 'Member Profile', path: '/members/profile' },
       { label: 'Traders', path: '/members/traders' },
       { label: 'Sub Agents', path: '/members/sub-agents' },
+      { label: 'Kyc Status', path: '/user-kyc' },
     ]
   },
   {
     label: 'Groups', icon: 'groups', children: [
       { label: 'All Groups' },
+      { label: 'Group Setting', path: '/group-setting' },
+    ]
+  },
+  {
+    label: 'Trade Master', icon: 'monitoring', children: [
+      { label: 'Trade History', path: '/trade-setting' },
+      { label: 'Trade Settings', path: '/forex-charges' },
+    ]
+  },
+  {
+    label: 'Promo Offers', icon: 'trending_up', children: [
+      { label: 'Offers', path: '/market/offers' },
     ]
   },
   {
@@ -176,23 +176,13 @@ const menus = [
     ]
   },
   {
-    label: 'Kyc Status', icon: 'verified_user', children: [
-      { label: 'User Kyc', path: '/user-kyc' },
-      { label: 'Others Kyc' },
-    ]
-  },
-  {
-    label: 'Market', icon: 'trending_up', children: [
-      { label: 'Market1' },
-      { label: 'Offers', path: '/market/offers' },
+    label: 'Reports', icon: 'analytics', children: [
+      { label: 'Transactions' },
+      { label: 'Balance Sheet' },
+      { label: 'Report2' },
     ]
   },
   { label: 'IB Program', icon: 'workspace_premium' },
-  {
-    label: 'Trade Master', icon: 'monitoring', children: [
-      { label: 'Trade Setting', path: '/trade-setting' },
-    ]
-  },
   { label: 'Mam&Pam', icon: 'insights' },
   {
     label: 'Support', icon: 'support_agent', children: [
