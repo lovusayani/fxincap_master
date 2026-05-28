@@ -80,7 +80,8 @@ export default function Header() {
     const desktopTopLinks = [
         { label: "Portfolio", path: "/portfolio" },
         { label: "Markets", path: "/markets" },
-        { label: "Mam/PaM", path: "/mampamm" },
+        { label: "MT5", path: "/mt5" },
+        { label: "Copy Trade", path: "/mampamm" },
         { label: "Wallet", path: "/wallet" },
         { label: "IB", path: "/ib" },
     ];
@@ -88,7 +89,7 @@ export default function Header() {
     const moreMenuItems = [
         { label: "Strategy", path: "/strategy" },
         { label: "TradeMaster", path: "/trademaster" },
-        { label: "MAM/PAMM", path: "/mampamm" },
+        { label: "Copy Trade", path: "/mampamm" },
     ];
 
     const profileMenuItems = [

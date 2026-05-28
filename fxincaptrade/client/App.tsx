@@ -19,6 +19,7 @@ import HistoryPage from "@/pages/History";
 import PositionsPage from "@/pages/Positions";
 import SettingsPage from "@/pages/Settings";
 import IbPage from "@/pages/IB";
+import MT5Page from "@/pages/MT5";
 import { apiUrl } from "@/lib/api";
 
 class ErrorBoundary extends React.Component<
@@ -575,6 +576,7 @@ export default function App() {
           <Route path="/positions" element={<RequireAuth><PositionsPage /></RequireAuth>} />
           <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
           <Route path="/ib" element={<RequireAuth><IbPage /></RequireAuth>} />
+          <Route path="/mt5" element={<RequireAuth><MT5Page /></RequireAuth>} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

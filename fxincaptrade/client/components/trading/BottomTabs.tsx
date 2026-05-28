@@ -122,7 +122,7 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
             const requestErrors: string[] = [];
             if (posRes.ok) {
                 const d = await posRes.json();
-                const raw: any[] = Array.isArray(d) ? d : (d.trades ?? []);
+                const raw: any[] = Array.isArray(d) ? d : (d.trades ?? d ?? []);
                 setPositions(raw.map((t: any) => ({
                     id: String(t.id ?? t.trade_id),
                     symbol: t.symbol,
@@ -145,7 +145,7 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
             }
             if (ordRes.ok) {
                 const d = await ordRes.json();
-                const raw: any[] = Array.isArray(d) ? d : (d.orders ?? []);
+                const raw: any[] = Array.isArray(d) ? d : (d.orders ?? d ?? []);
                 setOrders(raw.map((ord: any) => ({
                     id: String(ord.id),
                     symbol: ord.symbol,
@@ -161,7 +161,7 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
             }
             if (histRes.ok) {
                 const d = await histRes.json();
-                const raw: any[] = Array.isArray(d) ? d : (d.history ?? []);
+                const raw: any[] = Array.isArray(d) ? d : (d.history ?? d ?? []);
                 setHistory(raw.slice(0, 10).map((t: any) => ({
                     id: String(t.id),
                     symbol: t.symbol,

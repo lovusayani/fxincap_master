@@ -6,6 +6,7 @@ import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { MarketSymbolSummary } from "./types";
 import { cn } from "@/lib/utils";
+import { ChevronDown } from "lucide-react";
 import {
   calculateRequiredMargin,
   getNotional,
@@ -68,6 +69,9 @@ export default function TradePanel({
   /** Lets users type "1.25" without `toFixed(2)` snapping each keystroke. */
   const [lotEditing, setLotEditing] = useState(false);
   const [lotText, setLotText] = useState("");
+  const [expandStopLoss, setExpandStopLoss] = useState(false);
+  const [expandTakeProfit, setExpandTakeProfit] = useState(false);
+  const [expandMargin, setExpandMargin] = useState(false);
 
   const sym = currentSymbol.code;
   const ask = currentSymbol.ask || 0;
@@ -286,136 +290,175 @@ export default function TradePanel({
         </div>
       </div>
 
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <label className="text-xs uppercase tracking-[0.18em] text-gray-400">Stop Loss (Market orders)</label>
-          <span className="text-[10px] text-gray-500">Pip size ≈ {pip}</span>
-        </div>
-        <Input type="number" value={sl} onChange={(event) => setSl(event.target.value)} placeholder="Optional — validated vs Bid/Ask" />
-        {((orderType === "Market" && ask > 0 && bid > 0) || (orderType !== "Market" && priceForPending > 0)) && (
-          <>
-            <div className="flex flex-wrap gap-1.5">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 border-white/15 bg-white/5 text-[10px] text-gray-200"
-                onClick={() => setSlPipsFromEntry("BUY", 10)}
-              >
-                Buy: SL −10 pips
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 border-white/15 bg-white/5 text-[10px] text-gray-200"
-                onClick={() => setSlPipsFromEntry("BUY", 20)}
-              >
-                Buy: SL −20 pips
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 border-white/15 bg-white/5 text-[10px] text-gray-200"
-                onClick={() => setSlPipsFromEntry("SELL", 10)}
-              >
-                Sell: SL +10 pips
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 border-white/15 bg-white/5 text-[10px] text-gray-200"
-                onClick={() => setSlPipsFromEntry("SELL", 20)}
-              >
-                Sell: SL +20 pips
-              </Button>
-            </div>
-            <div className="space-y-1 rounded-md border border-white/10 bg-white/[0.02] p-2 text-[10px] text-gray-400">
-              <div>
-                <span className="text-cyan-300/90">Buy</span>{" "}
-                {isMarket ? (
-                  <>
-                    uses Ask <span className="text-white">{ask.toFixed(ask > 100 ? 2 : 5)}</span>
-                  </>
-                ) : (
-                  <>
-                    ref. <span className="text-white">{priceForPending.toFixed(priceForPending > 100 ? 2 : 5)}</span> (limit)
-                  </>
-                )}
-                {slParsed ? (
-                  <>
-                    {" "}
-                    — SL distance{" "}
-                    {slPipsBuy != null ? (
-                      <span className="text-gray-200">{slPipsBuy.toFixed(1)} pips</span>
+      <div className="space-y-0">
+        <button
+          type="button"
+          onClick={() => setExpandStopLoss(!expandStopLoss)}
+          className="w-full flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-xs uppercase tracking-[0.18em] text-gray-300 hover:bg-white/10 transition"
+        >
+          <span className="flex items-center gap-2">
+            Stop Loss (Market orders)
+            <span className="text-[10px] text-gray-500">Pip size ≈ {pip}</span>
+          </span>
+          <ChevronDown className={`w-4 h-4 transition-transform ${expandStopLoss ? "rotate-180" : ""}`} />
+        </button>
+
+        {expandStopLoss && (
+          <div className="space-y-2 bg-white/[0.02] border border-t-0 border-white/10 rounded-b-lg p-3 rounded-t-none">
+            <Input type="number" value={sl} onChange={(event) => setSl(event.target.value)} placeholder="Optional — validated vs Bid/Ask" />
+            {((orderType === "Market" && ask > 0 && bid > 0) || (orderType !== "Market" && priceForPending > 0)) && (
+              <>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 border-white/15 bg-white/5 text-[10px] text-gray-200"
+                    onClick={() => setSlPipsFromEntry("BUY", 10)}
+                  >
+                    Buy: SL −10 pips
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 border-white/15 bg-white/5 text-[10px] text-gray-200"
+                    onClick={() => setSlPipsFromEntry("BUY", 20)}
+                  >
+                    Buy: SL −20 pips
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 border-white/15 bg-white/5 text-[10px] text-gray-200"
+                    onClick={() => setSlPipsFromEntry("SELL", 10)}
+                  >
+                    Sell: SL +10 pips
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 border-white/15 bg-white/5 text-[10px] text-gray-200"
+                    onClick={() => setSlPipsFromEntry("SELL", 20)}
+                  >
+                    Sell: SL +20 pips
+                  </Button>
+                </div>
+                <div className="space-y-1 rounded-md border border-white/10 bg-white/[0.02] p-2 text-[10px] text-gray-400">
+                  <div>
+                    <span className="text-cyan-300/90">Buy</span>{" "}
+                    {isMarket ? (
+                      <>
+                        uses Ask <span className="text-white">{ask.toFixed(ask > 100 ? 2 : 5)}</span>
+                      </>
                     ) : (
-                      "—"
-                    )}{" "}
-                    {slBuyCheck.ok ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">{slBuyCheck.message}</span>}
-                  </>
-                ) : null}
-              </div>
-              <div>
-                <span className="text-rose-300/90">Sell</span>{" "}
-                {isMarket ? (
-                  <>
-                    uses Bid <span className="text-white">{bid.toFixed(bid > 100 ? 2 : 5)}</span>
-                  </>
-                ) : (
-                  <>
-                    ref. <span className="text-white">{priceForPending.toFixed(priceForPending > 100 ? 2 : 5)}</span> (limit)
-                  </>
-                )}
-                {slParsed ? (
-                  <>
-                    {" "}
-                    — SL distance{" "}
-                    {slPipsSell != null ? (
-                      <span className="text-gray-200">{slPipsSell.toFixed(1)} pips</span>
+                      <>
+                        ref. <span className="text-white">{priceForPending.toFixed(priceForPending > 100 ? 2 : 5)}</span> (limit)
+                      </>
+                    )}
+                    {slParsed ? (
+                      <>
+                        {" "}
+                        — SL distance{" "}
+                        {slPipsBuy != null ? (
+                          <span className="text-gray-200">{slPipsBuy.toFixed(1)} pips</span>
+                        ) : (
+                          "—"
+                        )}{" "}
+                        {slBuyCheck.ok ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">{slBuyCheck.message}</span>}
+                      </>
+                    ) : null}
+                  </div>
+                  <div>
+                    <span className="text-rose-300/90">Sell</span>{" "}
+                    {isMarket ? (
+                      <>
+                        uses Bid <span className="text-white">{bid.toFixed(bid > 100 ? 2 : 5)}</span>
+                      </>
                     ) : (
-                      "—"
-                    )}{" "}
-                    {slSellCheck.ok ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">{slSellCheck.message}</span>}
-                  </>
-                ) : null}
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
-      <div className="space-y-2">
-        <label className="text-xs uppercase tracking-[0.18em] text-gray-400">Take Profit</label>
-        <Input type="number" value={tp} onChange={(event) => setTp(event.target.value)} placeholder="Optional" />
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between text-xs uppercase tracking-[0.18em] text-gray-400">
-          <span>Leverage (1–100)</span>
-          <span>{leverage}x</span>
-        </div>
-        <Slider
-          value={[leverage]}
-          min={1}
-          max={100}
-          step={1}
-          onValueChange={(value) => setLeverage(value[0] ?? leverage)}
-        />
-      </div>
-
-      <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-sm">
-        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Margin & exposure</div>
-        {marginRows}
-        {noFreeMargin && (
-          <div className="mt-2 rounded-lg border border-red-400/30 bg-red-500/10 p-2 text-xs text-red-200">
-            No free margin — close positions or cancel pending orders before opening new trades.
+                      <>
+                        ref. <span className="text-white">{priceForPending.toFixed(priceForPending > 100 ? 2 : 5)}</span> (limit)
+                      </>
+                    )}
+                    {slParsed ? (
+                      <>
+                        {" "}
+                        — SL distance{" "}
+                        {slPipsSell != null ? (
+                          <span className="text-gray-200">{slPipsSell.toFixed(1)} pips</span>
+                        ) : (
+                          "—"
+                        )}{" "}
+                        {slSellCheck.ok ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">{slSellCheck.message}</span>}
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
-        {isMarket && (insufficientBuy || insufficientSell) && (
-          <div className="mt-2 border-t border-red-400/20 pt-2 text-xs text-red-300">
-            Required margin exceeds free margin for {insufficientBuy && insufficientSell ? "Buy and Sell" : insufficientBuy ? "Buy @ Ask" : "Sell @ Bid"}.
+      </div>
+
+      <div className="space-y-0">
+        <button
+          type="button"
+          onClick={() => setExpandTakeProfit(!expandTakeProfit)}
+          className="w-full flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-xs uppercase tracking-[0.18em] text-gray-300 hover:bg-white/10 transition"
+        >
+          <span>Take Profit</span>
+          <ChevronDown className={`w-4 h-4 transition-transform ${expandTakeProfit ? "rotate-180" : ""}`} />
+        </button>
+
+        {expandTakeProfit && (
+          <div className="space-y-2 bg-white/[0.02] border border-t-0 border-white/10 rounded-b-lg p-3">
+            <Input type="number" value={tp} onChange={(event) => setTp(event.target.value)} placeholder="Optional" />
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-0">
+        <button
+          type="button"
+          onClick={() => setExpandMargin(!expandMargin)}
+          className="w-full flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-xs uppercase tracking-[0.18em] text-gray-300 hover:bg-white/10 transition"
+        >
+          <span>Leverage (1–100) & Margin</span>
+          <ChevronDown className={`w-4 h-4 transition-transform ${expandMargin ? "rotate-180" : ""}`} />
+        </button>
+
+        {expandMargin && (
+          <div className="space-y-2 bg-white/[0.02] border border-t-0 border-white/10 rounded-b-lg p-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs uppercase tracking-[0.18em] text-gray-400">
+                <span>Leverage</span>
+                <span>{leverage}x</span>
+              </div>
+              <Slider
+                value={[leverage]}
+                min={1}
+                max={100}
+                step={1}
+                onValueChange={(value) => setLeverage(value[0] ?? leverage)}
+              />
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3 text-sm">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Margin & exposure</div>
+              {marginRows}
+              {noFreeMargin && (
+                <div className="mt-2 rounded-lg border border-red-400/30 bg-red-500/10 p-2 text-xs text-red-200">
+                  No free margin — close positions or cancel pending orders before opening new trades.
+                </div>
+              )}
+              {isMarket && (insufficientBuy || insufficientSell) && (
+                <div className="mt-2 border-t border-red-400/20 pt-2 text-xs text-red-300">
+                  Required margin exceeds free margin for {insufficientBuy && insufficientSell ? "Buy and Sell" : insufficientBuy ? "Buy @ Ask" : "Sell @ Bid"}.
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

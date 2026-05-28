@@ -49,27 +49,39 @@ export default function TradingViewWidget({ symbol, theme = "dark", interval = "
 
     const srcDoc = useMemo(
         () => `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset="utf-8">
-<style>
-  html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}
-  .tradingview-widget-container{width:100%;height:100%}
-  .tradingview-widget-container__widget{width:100%;height:calc(100% - 32px)}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background-color: #000;
+    }
+    body {
+      overflow: hidden;
+    }
+    .tradingview-widget-container {
+      width: 100%;
+      height: 100%;
+    }
+    .tradingview-widget-container__widget {
+      width: 100%;
+      height: 100%;
+    }
+  </style>
 </head>
 <body>
-<div class="tradingview-widget-container">
-  <div class="tradingview-widget-container__widget"></div>
-  <div class="tradingview-widget-copyright">
-    <a href="https://www.tradingview.com/" rel="noopener noreferrer nofollow" target="_blank">
-      <span style="color:#2962ff;font-size:11px">Track all markets on TradingView</span>
-    </a>
+  <div class="tradingview-widget-container">
+    <div class="tradingview-widget-container__widget"></div>
   </div>
-  <script type="text/javascript"
-    src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"
-    async>${config}</script>
-</div>
+  <script type="text/javascript">
+    var TradingViewConfig = ${config};
+  </script>
+  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"></script>
 </body>
 </html>`,
         [config]
@@ -80,7 +92,6 @@ export default function TradingViewWidget({ symbol, theme = "dark", interval = "
           key={`${tvSymbol}-${interval}`}
             srcDoc={srcDoc}
             style={{ width: "100%", height: "100%", border: "none", display: "block" }}
-            sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
             title={`Chart ${symbol}`}
         />
     );
