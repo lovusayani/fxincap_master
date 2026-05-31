@@ -1,5 +1,5 @@
-import React, { useEffect } from "react";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import React, { useEffect, useRef } from "react";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/toaster";
 import Dashboard from "@/pages/Dashboard";
 import Markets from "@/pages/Markets";
@@ -21,6 +21,24 @@ import SettingsPage from "@/pages/Settings";
 import IbPage from "@/pages/IB";
 import MT5Page from "@/pages/MT5";
 import { apiUrl } from "@/lib/api";
+
+function AutoLoginPage() {
+  const nav = useNavigate();
+  const ran = useRef(false);
+  useEffect(() => {
+    if (ran.current) return;
+    ran.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+    if (token) {
+      localStorage.setItem("auth_token", token);
+      nav("/", { replace: true });
+    } else {
+      nav("/login", { replace: true });
+    }
+  }, []);
+  return <div className="min-h-screen bg-black flex items-center justify-center text-white text-sm">Signing you in…</div>;
+}
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -559,6 +577,7 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/auto-login" element={<AutoLoginPage />} />
 
           <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
           <Route path="/markets" element={<RequireAuth><Markets /></RequireAuth>} />

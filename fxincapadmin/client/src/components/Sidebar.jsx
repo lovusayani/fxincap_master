@@ -151,9 +151,10 @@ const menus = [
     ]
   },
   {
-    label: 'Groups', icon: 'groups', children: [
+    label: 'Groups & Accounts', icon: 'groups', children: [
       { label: 'All Groups' },
       { label: 'Group Setting', path: '/group-setting' },
+      { label: 'Account Types', path: '/account-types' },
     ]
   },
   {
@@ -324,7 +325,6 @@ export const Sidebar = ({ expanded, onToggle }) => {
           return (
             <div key={idx}>
               <MenuItem
-                active={false}
                 title={item.label}
                 onClick={() => handleMenuClick(item, idx, hasChildren)}
               >

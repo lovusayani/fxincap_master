@@ -26,6 +26,7 @@ import { ServerSettings } from './pages/ServerSettings'
 import { UserSettings } from './pages/UserSettings'
 import { TradersList } from './pages/TradersList'
 import { SubAgentsList } from './pages/SubAgentsList'
+import { AccountTypes } from './pages/AccountTypes'
 
 function App() {
   return (
@@ -64,6 +65,7 @@ function App() {
             <Route path="user-kyc" element={<UserKycStatus />} />
             <Route path="trade-setting" element={<TradeSetting />} />
             <Route path="group-setting" element={<GroupSetting />} />
+            <Route path="account-types" element={<AccountTypes />} />
             <Route path="forex-charges" element={<ForexCharges />} />
             <Route path="market/offers" element={<Offers />} />
             <Route path="user-settings" element={<UserSettings />} />

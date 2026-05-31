@@ -86,6 +86,10 @@ export default function SettingsPage() {
     demo: emptyModeAccount("demo"),
     real: emptyModeAccount("real"),
   });
+  const [showAccountTypeModal, setShowAccountTypeModal] = useState(false);
+  const [accountTypes, setAccountTypes] = useState<any[]>([]);
+  const [loadingAccountTypes, setLoadingAccountTypes] = useState(false);
+  const [selectedAccountType, setSelectedAccountType] = useState<string | null>(null);
 
   const token = localStorage.getItem("auth_token");
   const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
@@ -178,6 +182,23 @@ export default function SettingsPage() {
     }
   };
 
+  const loadAccountTypes = async () => {
+    setLoadingAccountTypes(true);
+    try {
+      const res = await fetch(apiUrl("/api/user/account-types?type=real"), {
+        headers: authHeaders
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAccountTypes(data.data || []);
+      }
+    } catch {
+      setMessage({ ok: false, text: "Failed to load account types" });
+    } finally {
+      setLoadingAccountTypes(false);
+    }
+  };
+
   const activateRealAccount = async () => {
     setMessage(null);
 
@@ -207,13 +228,25 @@ export default function SettingsPage() {
       return;
     }
 
+    setShowAccountTypeModal(true);
+    await loadAccountTypes();
+  };
+
+  const confirmRealAccountActivation = async () => {
+    if (!selectedAccountType) {
+      setMessage({ ok: false, text: "Please select an account type" });
+      return;
+    }
+
     setActivatingReal(true);
+    setShowAccountTypeModal(false);
     setMessage({ ok: true, text: "Your real account is being activated, please wait..." });
 
     try {
       const res = await fetch(apiUrl("/api/user/activate-real-account"), {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ accountTypeId: selectedAccountType }),
       });
       const data = await res.json();
 
@@ -242,6 +275,7 @@ export default function SettingsPage() {
         ok: true,
         text: data?.message || "Your real account has been activated successfully",
       });
+      setSelectedAccountType(null);
     } catch {
       setMessage({
         ok: false,
@@ -387,6 +421,84 @@ export default function SettingsPage() {
             </Button>
           </CardContent>
         </Card>
+
+        {/* Account Type Selection Modal */}
+        {showAccountTypeModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-xl border border-white/10 bg-gray-900 p-6 shadow-2xl">
+              <h2 className="text-lg font-bold text-white mb-2">Select Account Type</h2>
+              <p className="text-sm text-gray-400 mb-4">Choose the account type that best suits your trading needs</p>
+
+              {loadingAccountTypes ? (
+                <div className="text-center py-6 text-gray-400">Loading account types...</div>
+              ) : accountTypes.length === 0 ? (
+                <div className="text-center py-6 text-gray-400 text-sm">No account types available. Please contact support.</div>
+              ) : (
+                <div className="space-y-3 mb-6 max-h-64 overflow-y-auto">
+                  {accountTypes.map((type) => (
+                    <button
+                      key={type.id}
+                      onClick={() => setSelectedAccountType(type.id)}
+                      className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
+                        selectedAccountType === type.id
+                          ? "border-blue-500 bg-blue-500/10"
+                          : "border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <p className="font-semibold text-white">{type.name}</p>
+                          {type.description && (
+                            <p className="text-xs text-gray-400 mt-1">{type.description}</p>
+                          )}
+                          <div className="flex gap-4 mt-2 text-xs text-gray-500">
+                            {type.minDeposit > 0 && (
+                              <span>Min: ${type.minDeposit.toFixed(2)}</span>
+                            )}
+                            <span>Leverage: 1:{type.leverage}</span>
+                          </div>
+                        </div>
+                        <div
+                          className={`w-5 h-5 rounded border-2 mt-1 flex-shrink-0 flex items-center justify-center ${
+                            selectedAccountType === type.id
+                              ? "border-blue-500 bg-blue-500"
+                              : "border-white/20"
+                          }`}
+                        >
+                          {selectedAccountType === type.id && (
+                            <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <Button
+                  onClick={() => {
+                    setShowAccountTypeModal(false);
+                    setSelectedAccountType(null);
+                  }}
+                  variant="outline"
+                  className="flex-1 h-10 rounded-lg border-white/10 text-gray-300 hover:bg-white/10"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={confirmRealAccountActivation}
+                  disabled={activatingReal || loadingAccountTypes || !selectedAccountType}
+                  className="flex-1 h-10 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {activatingReal ? "Activating..." : "Confirm"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

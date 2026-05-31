@@ -548,6 +548,27 @@ CREATE TABLE IF NOT EXISTS statistics (
 -- INSERT DEFAULT DATA
 -- =============================================
 
+-- Account Types Table (for admin to create account types for traders)
+CREATE TABLE IF NOT EXISTS account_types (
+  id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
+  name VARCHAR(100) NOT NULL,
+  description TEXT,
+  min_deposit DECIMAL(12, 2) DEFAULT 0.00,
+  leverage INT DEFAULT 100,
+  exposure_limit DECIMAL(15, 2) DEFAULT 0.00,
+  is_demo BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_name (name),
+  INDEX idx_is_demo (is_demo)
+);
+
+-- Add columns to user_accounts if they don't exist (leverage and account_type_id)
+ALTER TABLE IF EXISTS user_accounts ADD COLUMN IF NOT EXISTS leverage INT DEFAULT 500;
+ALTER TABLE IF EXISTS user_accounts ADD COLUMN IF NOT EXISTS account_type_id VARCHAR(36) DEFAULT NULL;
+ALTER TABLE IF EXISTS user_accounts ADD CONSTRAINT FOREIGN KEY (account_type_id) REFERENCES account_types(id) ON DELETE SET NULL;
+ALTER TABLE IF EXISTS user_accounts ADD INDEX IF NOT EXISTS idx_account_type_id (account_type_id);
+
 -- Insert default account tiers
 INSERT IGNORE INTO account_tiers (id, name, description, min_balance, max_leverage, daily_deposit_limit, monthly_deposit_limit, commission_rate)
 VALUES

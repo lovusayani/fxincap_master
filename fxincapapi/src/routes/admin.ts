@@ -1,10 +1,12 @@
 import { Router, Response, Request } from "express";
 import bcryptjs from "bcryptjs";
+import jwt from "jsonwebtoken";
 import { AuthRequest, verifyToken } from "./auth.js";
 import { fetchUserById, fetchUsers, countUsers, deleteUserIfEligible } from "../services/adminUsers.js";
 import { fetchFundRequests, updateFundRequestStatus, fetchFundRequestById, completeDepositAndCredit, completeWithdrawalAndDebit, rejectWithdrawalAndCredit } from "../services/adminFunds.js";
 import { fetchKycDocuments, fetchKycDocumentById, updateKycStatus } from "../services/adminKyc.js";
 import { getAutoCloseTimeoutMinutes, setAutoCloseTimeoutMinutes } from "../lib/trade-settings.js";
+import { ensureAccountTypesTable } from "../lib/account-types.js";
 import { getConnection, query } from "../lib/database.js";
 import { v4 as uuidv4 } from "uuid";
 import multer from "multer";
@@ -471,7 +473,144 @@ router.put("/wallet-report/:userId/balance", verifyToken, async (req: AuthReques
   }
 });
 
-// Get all positions
+// ==========================================
+// All trades (positions + trade_history) for admin
+// ==========================================
+router.get("/trades", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const mode = String(req.query.mode || "").toLowerCase(); // demo | real | ""
+    const status = String(req.query.status || "").toLowerCase(); // open | closed | ""
+    const search = String(req.query.search || "").toLowerCase();
+    const from = req.query.from as string;
+    const to = req.query.to as string;
+    const page = Math.max(1, parseInt(String(req.query.page || "1")));
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "50"))));
+    const offset = (page - 1) * limit;
+
+    // Build open positions query
+    let openWhere = "1=1";
+    const openParams: any[] = [];
+
+    if (mode) {
+      openWhere += " AND ua.trading_mode = ?";
+      openParams.push(mode);
+    }
+    if (search) {
+      openWhere += " AND (p.symbol ILIKE ? OR u.email ILIKE ? OR u.first_name ILIKE ? OR u.last_name ILIKE ?)";
+      const s = `%${search}%`;
+      openParams.push(s, s, s, s);
+    }
+    if (from) {
+      openWhere += " AND p.open_time >= ?";
+      openParams.push(from);
+    }
+    if (to) {
+      openWhere += " AND p.open_time <= ?";
+      openParams.push(to + " 23:59:59");
+    }
+
+    // Build closed trades query
+    let closedWhere = "1=1";
+    const closedParams: any[] = [];
+
+    if (mode) {
+      closedWhere += " AND ua.trading_mode = ?";
+      closedParams.push(mode);
+    }
+    if (search) {
+      closedWhere += " AND (th.symbol ILIKE ? OR u.email ILIKE ? OR u.first_name ILIKE ? OR u.last_name ILIKE ?)";
+      const s = `%${search}%`;
+      closedParams.push(s, s, s, s);
+    }
+    if (from) {
+      closedWhere += " AND th.close_time >= ?";
+      closedParams.push(from);
+    }
+    if (to) {
+      closedWhere += " AND th.close_time <= ?";
+      closedParams.push(to + " 23:59:59");
+    }
+
+    let openTrades: any[] = [];
+    let closedTrades: any[] = [];
+
+    if (!status || status === "open") {
+      openTrades = await query(`
+        SELECT p.id, p.symbol, p.side, p.volume, p.open_price, p.current_price,
+               p.stop_loss, p.take_profit, p.profit, p.leverage, p.status,
+               p.open_time, p.close_time, p.closed_price,
+               u.email, u.first_name, u.last_name,
+               ua.account_number, ua.trading_mode
+        FROM positions p
+        JOIN users u ON u.id = p.user_id
+        JOIN user_accounts ua ON ua.id = p.account_id
+        WHERE ${openWhere} AND p.status = 'open'
+        ORDER BY p.open_time DESC
+      `, openParams) as any[];
+    }
+
+    if (!status || status === "closed") {
+      closedTrades = await query(`
+        SELECT th.id, th.symbol, th.side, th.volume, th.open_price, th.close_price as current_price,
+               NULL as stop_loss, NULL as take_profit, th.profit, th.leverage, 'closed' as status,
+               th.open_time, th.close_time, th.close_price as closed_price,
+               u.email, u.first_name, u.last_name,
+               ua.account_number, ua.trading_mode
+        FROM trade_history th
+        JOIN users u ON u.id = th.user_id
+        JOIN user_accounts ua ON ua.id = th.account_id
+        WHERE ${closedWhere}
+        ORDER BY th.close_time DESC
+      `, closedParams) as any[];
+    }
+
+    const all = [...openTrades, ...closedTrades].sort((a, b) =>
+      new Date(b.open_time || b.close_time).getTime() - new Date(a.open_time || a.close_time).getTime()
+    );
+
+    const total = all.length;
+    const paginated = all.slice(offset, offset + limit);
+
+    // Stats
+    const totalProfit = all.reduce((s, t) => s + Number(t.profit || 0), 0);
+    const openCount = all.filter(t => t.status === "open").length;
+
+    res.json({
+      success: true,
+      data: paginated.map(t => ({
+        id: t.id,
+        symbol: t.symbol,
+        side: t.side,
+        volume: Number(t.volume),
+        openPrice: Number(t.open_price),
+        currentPrice: Number(t.current_price || t.open_price),
+        closePrice: t.closed_price ? Number(t.closed_price) : null,
+        stopLoss: t.stop_loss ? Number(t.stop_loss) : null,
+        takeProfit: t.take_profit ? Number(t.take_profit) : null,
+        profit: Number(t.profit || 0),
+        leverage: Number(t.leverage || 1),
+        status: t.status,
+        openTime: t.open_time,
+        closeTime: t.close_time,
+        traderEmail: t.email,
+        traderName: `${t.first_name || ""} ${t.last_name || ""}`.trim(),
+        accountNumber: t.account_number,
+        mode: t.trading_mode,
+      })),
+      total,
+      stats: {
+        totalTrades: total,
+        openPositions: openCount,
+        closedTrades: total - openCount,
+        totalProfit,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get all positions (legacy stub kept for backward compat)
 router.get("/positions", verifyToken, async (req: AuthRequest, res: Response) => {
   res.json([]);
 });
@@ -1408,6 +1547,65 @@ router.post("/traders/:userId/deduct-fund", verifyToken, async (req: AuthRequest
 });
 
 // ==========================================
+// Trader — Trading Accounts
+// ==========================================
+router.get("/traders/:userId/trading-accounts", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { userId } = req.params;
+    const accounts = await query(
+      `SELECT id, account_number, trading_mode, balance, equity, margin_free, available_balance, currency, account_status, created_at
+       FROM user_accounts WHERE user_id = ? ORDER BY trading_mode ASC`,
+      [userId]
+    ) as any[];
+
+    const data = (Array.isArray(accounts) ? accounts : []).map((a: any) => ({
+      id: a.id,
+      accountNumber: a.account_number,
+      mode: a.trading_mode,
+      balance: Number(a.balance || 0),
+      equity: Number(a.equity || 0),
+      freeMargin: Number(a.margin_free || 0),
+      availableBalance: Number(a.available_balance || 0),
+      currency: a.currency || "USD",
+      status: a.account_status,
+      createdAt: a.created_at,
+    }));
+
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// Trader — Login as User (impersonate)
+// ==========================================
+router.post("/traders/:userId/login-as", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { userId } = req.params;
+    const users = await query(
+      "SELECT id, email, first_name, last_name FROM users WHERE id = ? LIMIT 1",
+      [userId]
+    ) as any[];
+
+    if (!Array.isArray(users) || users.length === 0) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    const user = users[0];
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      process.env.JWT_SECRET || "secret",
+      { expiresIn: "2h" }
+    );
+
+    res.json({ success: true, token, user: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
 // Sub Agents — admin_users list
 // ==========================================
 router.get("/sub-agents", verifyToken, async (req: AuthRequest, res: Response) => {
@@ -1448,6 +1646,112 @@ router.get("/sub-agents", verifyToken, async (req: AuthRequest, res: Response) =
     }));
 
     res.json({ success: true, data, total, page, limit });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// Account Types — CRUD operations
+// ==========================================
+router.get("/account-types", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureAccountTypesTable();
+
+    const rows = await query(`
+      SELECT id, name, description, min_deposit, leverage, exposure_limit, is_demo, created_at, updated_at
+      FROM account_types
+      ORDER BY created_at DESC
+    `) as any[];
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      minDeposit: Number(row.min_deposit || 0),
+      leverage: Number(row.leverage || 100),
+      exposureLimit: Number(row.exposure_limit || 0),
+      isDemo: Boolean(row.is_demo),
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+    }));
+
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/account-types", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureAccountTypesTable();
+
+    const { name, description, minDeposit, leverage, exposureLimit, isDemo } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, error: "Name is required" });
+    }
+
+    if (!leverage || Number(leverage) <= 0) {
+      return res.status(400).json({ success: false, error: "Valid leverage is required" });
+    }
+
+    const id = uuidv4();
+    await query(`
+      INSERT INTO account_types (id, name, description, min_deposit, leverage, exposure_limit, is_demo, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+    `, [id, name, description || "", minDeposit || 0, leverage, exposureLimit || 0, isDemo ? 1 : 0]);
+
+    res.status(201).json({
+      success: true,
+      message: "Account type created successfully",
+      data: { id, name, description, minDeposit, leverage, exposureLimit, isDemo }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/account-types/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureAccountTypesTable();
+
+    const { id } = req.params;
+    const { name, description, minDeposit, leverage, exposureLimit, isDemo } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, error: "Name is required" });
+    }
+
+    if (!leverage || Number(leverage) <= 0) {
+      return res.status(400).json({ success: false, error: "Valid leverage is required" });
+    }
+
+    await query(`
+      UPDATE account_types
+      SET name = ?, description = ?, min_deposit = ?, leverage = ?, exposure_limit = ?, is_demo = ?, updated_at = NOW()
+      WHERE id = ?
+    `, [name, description || "", minDeposit || 0, leverage, exposureLimit || 0, isDemo ? 1 : 0, id]);
+
+    res.json({
+      success: true,
+      message: "Account type updated successfully",
+      data: { id, name, description, minDeposit, leverage, exposureLimit, isDemo }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete("/account-types/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureAccountTypesTable();
+
+    const { id } = req.params;
+
+    await query(`DELETE FROM account_types WHERE id = ?`, [id]);
+
+    res.json({ success: true, message: "Account type deleted successfully" });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

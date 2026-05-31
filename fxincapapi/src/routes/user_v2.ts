@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { sendDepositEmail, sendEmail } from "../lib/mailer.js";
+import { ensureAccountTypesTable } from "../lib/account-types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -565,9 +566,44 @@ router.get("/account-activation-settings", verifyToken, async (_req: AuthRequest
   }
 });
 
+// ==========================================
+// Account Types — for trader selection
+// ==========================================
+router.get("/account-types", verifyToken, async (req: AuthRequest, res) => {
+  try {
+    await ensureAccountTypesTable();
+
+    const type = (req.query.type as string) || "real";
+    const rows = await query(`
+      SELECT id, name, description, min_deposit, leverage, exposure_limit, is_demo, created_at
+      FROM account_types
+      WHERE is_demo = ?
+      ORDER BY created_at DESC
+    `, [type === "demo" ? true : false]) as any[];
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      minDeposit: Number(row.min_deposit || 0),
+      leverage: Number(row.leverage || 100),
+      exposureLimit: Number(row.exposure_limit || 0),
+      isDemo: Boolean(row.is_demo),
+    }));
+
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res) => {
   try {
+    await ensureAccountTypesTable();
+
     const userId = req.user?.id;
+    const { accountTypeId } = req.body;
+
     if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
@@ -600,7 +636,7 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
           margin: 0,
           freeMargin: Number(account.margin_free || 0),
           currency: String(account.currency || "USD"),
-          leverage: 500,
+          leverage: Number(account.leverage || 500),
         },
       });
     }
@@ -633,6 +669,21 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
       }
     }
 
+    // Get account type details if provided
+    let leverage = 500;
+    let selectedAccountTypeId = accountTypeId;
+
+    if (accountTypeId) {
+      const accountTypeRows = await query(
+        "SELECT leverage FROM account_types WHERE id = ? LIMIT 1",
+        [accountTypeId]
+      ) as any[];
+
+      if (Array.isArray(accountTypeRows) && accountTypeRows.length > 0) {
+        leverage = Number(accountTypeRows[0].leverage || 500);
+      }
+    }
+
     const realAccountNumber = `REAL-${String(userId).slice(0, 8).toUpperCase()}-${Date.now().toString().slice(-6)}`;
     await query(
       "INSERT INTO user_accounts (id, user_id, account_number, balance, equity, margin_free, available_balance, trading_mode, currency, account_status) VALUES (?, ?, ?, ?, ?, ?, ?, 'real', 'USD', 'active')",
@@ -656,11 +707,12 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
         margin: 0,
         freeMargin: 0,
         currency: "USD",
-        leverage: 500,
+        leverage,
       },
     });
   } catch (error: any) {
-    return res.status(500).json({ success: false, message: "Failed to activate real account, please try again later", error: error.message });
+    console.error("[activate-real-account] ERROR:", error.message, error.stack);
+    return res.status(500).json({ success: false, message: error.message || "Failed to activate real account, please try again later" });
   }
 });
 

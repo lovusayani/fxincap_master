@@ -244,6 +244,16 @@ export const TradersList = () => {
   const [confirmLoading, setConfirmLoading] = useState(false)
   const [confirmError,   setConfirmError]   = useState('')
 
+  const [viewDetailsModal, setViewDetailsModal] = useState({ open: false, userId: null })
+  const [viewDetailsData,  setViewDetailsData]  = useState(null)
+  const [viewDetailsLoading, setViewDetailsLoading] = useState(false)
+  const [viewDetailsError, setViewDetailsError] = useState('')
+
+  const [tradingAccountsModal, setTradingAccountsModal] = useState({ open: false, userId: null, name: '' })
+  const [tradingAccounts, setTradingAccounts] = useState([])
+  const [tradingAccountsLoading, setTradingAccountsLoading] = useState(false)
+  const [loginAsLoading, setLoginAsLoading] = useState(false)
+
   // ── Fetch stats ───────────────────────────────────────────────────────────
   useEffect(() => {
     setStatsLoading(true)
@@ -321,6 +331,29 @@ export const TradersList = () => {
 
   const resetPage = () => setPagination(p => ({ ...p, pageIndex: 0 }))
 
+  const handleViewDetails = (row) => {
+    setViewDetailsModal({ open: true, userId: row.id })
+    setViewDetailsData({
+      id: row.id,
+      firstName: row.name?.split(' ')[0] || '',
+      lastName: row.name?.split(' ').slice(1).join(' ') || '',
+      email: row.email,
+      phone: row.phone,
+      realBalance: row.realBalance,
+      demoBalance: row.demoBalance,
+      status: row.rawStatus,
+      createdAt: row.createdAt,
+    })
+    setViewDetailsLoading(false)
+    setViewDetailsError('')
+  }
+
+  const closeViewDetails = () => {
+    setViewDetailsModal({ open: false, userId: null })
+    setViewDetailsData(null)
+    setViewDetailsError('')
+  }
+
   // ── Handlers ───────────────────────────────────────────────────────────────
   const handleChangePassword = async () => {
     setPwSaving(true); setPwError('')
@@ -354,6 +387,41 @@ export const TradersList = () => {
       setRefreshKey(k => k + 1)
     } catch (err) { setConfirmError(err?.message || 'Action failed') }
     finally { setConfirmLoading(false) }
+  }
+
+  const handleOpenTradingAccounts = async (userId, name) => {
+    closeViewDetails()
+    setTradingAccountsModal({ open: true, userId, name })
+    setTradingAccountsLoading(true)
+    setTradingAccounts([])
+    try {
+      const resp = await fetch(`/api/admin/traders/${userId}/trading-accounts`, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      })
+      const json = await resp.json()
+      setTradingAccounts(json.data || [])
+    } catch { setTradingAccounts([]) }
+    finally { setTradingAccountsLoading(false) }
+  }
+
+  const handleLoginAsUser = async (userId, name) => {
+    setLoginAsLoading(true)
+    try {
+      const resp = await fetch(`/api/admin/traders/${userId}/login-as`, {
+        method: 'POST',
+        headers: authHeaders(),
+      })
+      const json = await resp.json()
+      if (!json.success) throw new Error(json.error || 'Failed')
+      const tradeUrl = `http://localhost:3000/auto-login?token=${json.token}`
+      window.open(tradeUrl, '_blank')
+      flash(`Logged in as ${name}`)
+      closeViewDetails()
+    } catch (err) {
+      flash(`Error: ${err.message}`)
+    } finally {
+      setLoginAsLoading(false)
+    }
   }
 
   // ── Sort toggle (server-side) ──────────────────────────────────────────────
@@ -404,7 +472,7 @@ export const TradersList = () => {
         const isBanned = row.rawStatus === 'banned'
         return (
           <div className="flex items-center gap-0.5">
-            <button title="View Details"     onClick={() => navigate(`/members/profile/${row.id}`)} className="p-1.5 rounded hover:bg-slate-700 text-slate-400 hover:text-emerald-400 transition-colors"><MSIcon name="visibility" /></button>
+            <button title="View Details"     onClick={() => handleViewDetails(row)} className="p-1.5 rounded hover:bg-slate-700 text-slate-400 hover:text-emerald-400 transition-colors"><MSIcon name="visibility" /></button>
             <button title="Change Password"  onClick={() => { setPwModal({ open: true, userId: row.id, name: row.name }); setPwInput(''); setPwError('') }}  className="p-1.5 rounded hover:bg-slate-700 text-slate-400 hover:text-sky-400 transition-colors"><MSIcon name="lock_reset" /></button>
             <button title="Deduct Fund"      onClick={() => { setDeductModal({ open: true, userId: row.id, name: row.name }); setDeductAmount(''); setDeductError('') }} className="p-1.5 rounded hover:bg-slate-700 text-slate-400 hover:text-amber-400 transition-colors"><MSIcon name="money_off" /></button>
             <button title={isBanned ? 'Unban' : 'Ban'} onClick={() => setConfirmModal({ open: true, userId: row.id, action: isBanned ? 'unban' : 'ban', name: row.name })} className={`p-1.5 rounded hover:bg-slate-700 transition-colors ${isBanned ? 'text-amber-400 hover:text-amber-300' : 'text-slate-400 hover:text-rose-400'}`}><MSIcon name={isBanned ? 'lock_open' : 'block'} /></button>
@@ -681,6 +749,136 @@ export const TradersList = () => {
                 {confirmLoading ? 'Processing…' : 'Confirm'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── View Details Modal ── */}
+      {viewDetailsModal.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-100">{viewDetailsData?.firstName || '—'} {viewDetailsData?.lastName || '—'}</h3>
+                <p className="text-xs text-slate-400">{viewDetailsData?.email || '—'}</p>
+              </div>
+              <button onClick={closeViewDetails} className="text-slate-400 hover:text-slate-100 text-2xl leading-none">✕</button>
+            </div>
+
+            {viewDetailsLoading ? (
+              <div className="text-center py-6 text-slate-400">Loading…</div>
+            ) : viewDetailsError ? (
+              <div className="text-center py-6 text-rose-400 text-sm">{viewDetailsError}</div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div className="bg-slate-800/50 rounded-lg p-3">
+                    <p className="text-xs text-slate-400 mb-1">Full Name</p>
+                    <p className="text-sm font-medium text-slate-100">{viewDetailsData?.firstName || '—'} {viewDetailsData?.lastName || '—'}</p>
+                  </div>
+                  <div className="bg-slate-800/50 rounded-lg p-3">
+                    <p className="text-xs text-slate-400 mb-1">Phone</p>
+                    <p className="text-sm font-medium text-slate-100">{viewDetailsData?.phone || '—'}</p>
+                  </div>
+                  <div className="bg-slate-800/50 rounded-lg p-3">
+                    <p className="text-xs text-slate-400 mb-1">Joined</p>
+                    <p className="text-sm font-medium text-slate-100">{viewDetailsData?.createdAt ? new Date(viewDetailsData.createdAt).toLocaleDateString() : '—'}</p>
+                  </div>
+                  <div className="bg-slate-800/50 rounded-lg p-3">
+                    <p className="text-xs text-slate-400 mb-1">Status</p>
+                    <StatusBadge v={viewDetailsData?.status} />
+                  </div>
+                </div>
+
+                <div className="mb-4 p-3 bg-slate-800/50 rounded-lg">
+                  <p className="text-xs text-slate-400 mb-1">Email</p>
+                  <p className="text-sm font-mono text-slate-100">{viewDetailsData?.email || '—'}</p>
+                </div>
+
+                <div className="mb-4 p-3 rounded-lg border border-emerald-800/50 bg-emerald-900/20">
+                  <div className="flex items-start justify-between mb-2">
+                    <div>
+                      <p className="text-xs text-slate-400 mb-1">Main Wallet Balance</p>
+                      <p className="text-2xl font-bold text-emerald-300">${(viewDetailsData?.realBalance || 0).toFixed(2)}</p>
+                    </div>
+                    <div className="flex gap-1">
+                      <button title="Add Fund" className="p-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white transition-colors"><MSIcon name="add" size={18} /></button>
+                      <button title="Deduct Fund" className="p-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white transition-colors"><MSIcon name="remove" size={18} /></button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 mb-4">
+                  <button onClick={() => { setPwModal({ open: true, userId: viewDetailsModal.userId, name: viewDetailsData?.firstName + ' ' + viewDetailsData?.lastName }); setPwInput(''); setPwError(''); closeViewDetails() }} className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-medium transition-colors"><MSIcon name="lock_reset" size={16} />Change Password</button>
+                  <button onClick={() => { setDeductModal({ open: true, userId: viewDetailsModal.userId, name: viewDetailsData?.firstName + ' ' + viewDetailsData?.lastName }); setDeductAmount(''); setDeductError(''); closeViewDetails() }} className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium transition-colors"><MSIcon name="money_off" size={16} />Deduct Fund</button>
+                  <button className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-xs font-medium transition-colors"><MSIcon name="lock" size={16} />Block</button>
+                  <button onClick={() => { setConfirmModal({ open: true, userId: viewDetailsModal.userId, action: viewDetailsData?.status === 'banned' ? 'unban' : 'ban', name: viewDetailsData?.firstName + ' ' + viewDetailsData?.lastName }); closeViewDetails() }} className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-medium transition-colors"><MSIcon name="block" size={16} />Ban</button>
+                  <button onClick={() => handleOpenTradingAccounts(viewDetailsModal.userId, `${viewDetailsData?.firstName} ${viewDetailsData?.lastName}`)} className="col-span-2 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-medium transition-colors"><MSIcon name="credit_card" size={16} />Trading Accounts</button>
+                  <button onClick={() => handleLoginAsUser(viewDetailsModal.userId, `${viewDetailsData?.firstName} ${viewDetailsData?.lastName}`)} disabled={loginAsLoading} className="col-span-2 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium transition-colors disabled:opacity-50"><MSIcon name="login" size={16} />{loginAsLoading ? 'Opening…' : 'Login as User'}</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {/* ── Trading Accounts Modal ── */}
+      {tradingAccountsModal.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-100">Trading Accounts</h3>
+                <p className="text-xs text-slate-400">{tradingAccountsModal.name}</p>
+              </div>
+              <button onClick={() => setTradingAccountsModal({ open: false, userId: null, name: '' })} className="text-slate-400 hover:text-slate-100 text-2xl leading-none">✕</button>
+            </div>
+
+            {tradingAccountsLoading ? (
+              <div className="text-center py-8 text-slate-400">Loading accounts…</div>
+            ) : tradingAccounts.length === 0 ? (
+              <div className="text-center py-8 text-slate-500 text-sm">No trading accounts found</div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {tradingAccounts.map(acc => (
+                  <div key={acc.id} className={`rounded-xl border p-4 ${acc.mode === 'real' ? 'border-emerald-800/60 bg-emerald-900/20' : 'border-sky-800/60 bg-sky-900/20'}`}>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className={`text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full ${acc.mode === 'real' ? 'bg-emerald-900/60 text-emerald-300' : 'bg-sky-900/60 text-sky-300'}`}>
+                        {acc.mode} account
+                      </span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full border ${acc.status === 'active' ? 'border-emerald-700 text-emerald-400' : 'border-slate-600 text-slate-400'}`}>
+                        {acc.status}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      <div>
+                        <p className="text-xs text-slate-400 mb-0.5">Account Number</p>
+                        <p className="font-mono text-slate-100 text-xs">{acc.accountNumber}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-400 mb-0.5">Currency</p>
+                        <p className="text-slate-100">{acc.currency}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-400 mb-0.5">Balance</p>
+                        <p className={`font-bold ${acc.mode === 'real' ? 'text-emerald-300' : 'text-sky-300'}`}>${acc.balance.toFixed(2)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-400 mb-0.5">Equity</p>
+                        <p className="text-slate-100">${acc.equity.toFixed(2)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-400 mb-0.5">Free Margin</p>
+                        <p className="text-slate-100">${acc.freeMargin.toFixed(2)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-400 mb-0.5">Available</p>
+                        <p className="text-slate-100">${acc.availableBalance.toFixed(2)}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
