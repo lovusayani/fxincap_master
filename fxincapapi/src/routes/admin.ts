@@ -474,135 +474,110 @@ router.put("/wallet-report/:userId/balance", verifyToken, async (req: AuthReques
 });
 
 // ==========================================
-// All trades (positions + trade_history) for admin
+// All trades for admin (from `trades` table)
 // ==========================================
 router.get("/trades", verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const mode = String(req.query.mode || "").toLowerCase(); // demo | real | ""
-    const status = String(req.query.status || "").toLowerCase(); // open | closed | ""
-    const search = String(req.query.search || "").toLowerCase();
+    const statusFilter = String(req.query.status || "").toUpperCase(); // OPEN | CLOSED | CANCELLED | ""
+    const search = String(req.query.search || "");
     const from = req.query.from as string;
     const to = req.query.to as string;
     const page = Math.max(1, parseInt(String(req.query.page || "1")));
     const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "50"))));
     const offset = (page - 1) * limit;
 
-    // Build open positions query
-    let openWhere = "1=1";
-    const openParams: any[] = [];
+    const conditions: string[] = [];
+    const params: any[] = [];
+    let idx = 1;
 
-    if (mode) {
-      openWhere += " AND ua.trading_mode = ?";
-      openParams.push(mode);
+    if (statusFilter) {
+      if (statusFilter === "OPEN") {
+        conditions.push(`t.status = $${idx++}`);
+        params.push("OPEN");
+      } else if (statusFilter === "CLOSED") {
+        conditions.push(`t.status IN ('CLOSED', 'CANCELLED')`);
+      }
     }
+
     if (search) {
-      openWhere += " AND (p.symbol ILIKE ? OR u.email ILIKE ? OR u.first_name ILIKE ? OR u.last_name ILIKE ?)";
-      const s = `%${search}%`;
-      openParams.push(s, s, s, s);
+      conditions.push(`(t.symbol ILIKE $${idx} OR u.email ILIKE $${idx} OR u.first_name ILIKE $${idx} OR u.last_name ILIKE $${idx})`);
+      params.push(`%${search}%`);
+      idx++;
     }
+
     if (from) {
-      openWhere += " AND p.open_time >= ?";
-      openParams.push(from);
+      conditions.push(`t.opened_at >= $${idx++}`);
+      params.push(from);
     }
     if (to) {
-      openWhere += " AND p.open_time <= ?";
-      openParams.push(to + " 23:59:59");
+      conditions.push(`t.opened_at <= $${idx++}`);
+      params.push(to + " 23:59:59");
     }
 
-    // Build closed trades query
-    let closedWhere = "1=1";
-    const closedParams: any[] = [];
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    if (mode) {
-      closedWhere += " AND ua.trading_mode = ?";
-      closedParams.push(mode);
-    }
-    if (search) {
-      closedWhere += " AND (th.symbol ILIKE ? OR u.email ILIKE ? OR u.first_name ILIKE ? OR u.last_name ILIKE ?)";
-      const s = `%${search}%`;
-      closedParams.push(s, s, s, s);
-    }
-    if (from) {
-      closedWhere += " AND th.close_time >= ?";
-      closedParams.push(from);
-    }
-    if (to) {
-      closedWhere += " AND th.close_time <= ?";
-      closedParams.push(to + " 23:59:59");
-    }
+    const rows = await query(`
+      SELECT t.id, t.symbol, t.side, t.volume, t.entry_price, t.current_price,
+             t.close_price, t.final_pnl, t.pnl, t.pnl_percentage,
+             t.leverage, t.status, t.opened_at, t.closed_at, t.closing_reason,
+             t.stop_loss, t.take_profit,
+             u.email, u.first_name, u.last_name
+      FROM trades t
+      JOIN users u ON u.id = t.user_id
+      ${where}
+      ORDER BY t.opened_at DESC
+      LIMIT $${idx++} OFFSET $${idx++}
+    `, [...params, limit, offset]) as any[];
 
-    let openTrades: any[] = [];
-    let closedTrades: any[] = [];
+    const countRows = await query(`
+      SELECT COUNT(*) as total FROM trades t
+      JOIN users u ON u.id = t.user_id
+      ${where}
+    `, params) as any[];
 
-    if (!status || status === "open") {
-      openTrades = await query(`
-        SELECT p.id, p.symbol, p.side, p.volume, p.open_price, p.current_price,
-               p.stop_loss, p.take_profit, p.profit, p.leverage, p.status,
-               p.open_time, p.close_time, p.closed_price,
-               u.email, u.first_name, u.last_name,
-               ua.account_number, ua.trading_mode
-        FROM positions p
-        JOIN users u ON u.id = p.user_id
-        JOIN user_accounts ua ON ua.id = p.account_id
-        WHERE ${openWhere} AND p.status = 'open'
-        ORDER BY p.open_time DESC
-      `, openParams) as any[];
-    }
+    const total = Number(countRows?.[0]?.total || 0);
 
-    if (!status || status === "closed") {
-      closedTrades = await query(`
-        SELECT th.id, th.symbol, th.side, th.volume, th.open_price, th.close_price as current_price,
-               NULL as stop_loss, NULL as take_profit, th.profit, th.leverage, 'closed' as status,
-               th.open_time, th.close_time, th.close_price as closed_price,
-               u.email, u.first_name, u.last_name,
-               ua.account_number, ua.trading_mode
-        FROM trade_history th
-        JOIN users u ON u.id = th.user_id
-        JOIN user_accounts ua ON ua.id = th.account_id
-        WHERE ${closedWhere}
-        ORDER BY th.close_time DESC
-      `, closedParams) as any[];
-    }
+    // Stats (all matching, not paginated)
+    const statsRows = await query(`
+      SELECT
+        COUNT(*) as total_trades,
+        COUNT(*) FILTER (WHERE t.status = 'OPEN') as open_trades,
+        COUNT(*) FILTER (WHERE t.status IN ('CLOSED','CANCELLED')) as closed_trades,
+        COALESCE(SUM(CASE WHEN t.status IN ('CLOSED','CANCELLED') THEN t.final_pnl ELSE t.pnl END), 0) as total_profit
+      FROM trades t
+      JOIN users u ON u.id = t.user_id
+      ${where}
+    `, params) as any[];
 
-    const all = [...openTrades, ...closedTrades].sort((a, b) =>
-      new Date(b.open_time || b.close_time).getTime() - new Date(a.open_time || a.close_time).getTime()
-    );
-
-    const total = all.length;
-    const paginated = all.slice(offset, offset + limit);
-
-    // Stats
-    const totalProfit = all.reduce((s, t) => s + Number(t.profit || 0), 0);
-    const openCount = all.filter(t => t.status === "open").length;
+    const s = statsRows?.[0] || {};
 
     res.json({
       success: true,
-      data: paginated.map(t => ({
+      data: (Array.isArray(rows) ? rows : []).map((t: any) => ({
         id: t.id,
         symbol: t.symbol,
         side: t.side,
         volume: Number(t.volume),
-        openPrice: Number(t.open_price),
-        currentPrice: Number(t.current_price || t.open_price),
-        closePrice: t.closed_price ? Number(t.closed_price) : null,
+        openPrice: Number(t.entry_price),
+        currentPrice: Number(t.current_price || t.entry_price),
+        closePrice: t.close_price ? Number(t.close_price) : null,
         stopLoss: t.stop_loss ? Number(t.stop_loss) : null,
         takeProfit: t.take_profit ? Number(t.take_profit) : null,
-        profit: Number(t.profit || 0),
+        profit: Number(t.status === "OPEN" ? (t.pnl || 0) : (t.final_pnl || 0)),
         leverage: Number(t.leverage || 1),
-        status: t.status,
-        openTime: t.open_time,
-        closeTime: t.close_time,
+        status: String(t.status || "").toLowerCase(),
+        openTime: t.opened_at,
+        closeTime: t.closed_at,
+        closingReason: t.closing_reason,
         traderEmail: t.email,
         traderName: `${t.first_name || ""} ${t.last_name || ""}`.trim(),
-        accountNumber: t.account_number,
-        mode: t.trading_mode,
       })),
       total,
       stats: {
-        totalTrades: total,
-        openPositions: openCount,
-        closedTrades: total - openCount,
-        totalProfit,
+        totalTrades: Number(s.total_trades || 0),
+        openPositions: Number(s.open_trades || 0),
+        closedTrades: Number(s.closed_trades || 0),
+        totalProfit: Number(s.total_profit || 0),
       },
     });
   } catch (error: any) {
