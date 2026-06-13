@@ -183,8 +183,16 @@ const menus = [
       { label: 'Report2' },
     ]
   },
-  { label: 'IB Program', icon: 'workspace_premium' },
-  { label: 'Mam&Pam', icon: 'insights' },
+  {
+    label: 'IB Program', icon: 'workspace_premium', children: [
+      { label: 'IB Management', path: '/ib-program' },
+    ]
+  },
+  {
+    label: 'Mam&Pam', icon: 'insights', children: [
+      { label: 'Copy Trade Management', path: '/mam-pam' },
+    ]
+  },
   {
     label: 'Support', icon: 'support_agent', children: [
       { label: 'Tickets' },

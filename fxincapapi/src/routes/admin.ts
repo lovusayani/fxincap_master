@@ -1732,5 +1732,340 @@ router.delete("/account-types/:id", verifyToken, async (req: AuthRequest, res: R
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// IB Program routes
+// ─────────────────────────────────────────────────────────────
+
+// Ensure IB tables exist
+async function ensureIBTables() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS ib_partners (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36) NOT NULL,
+      name VARCHAR(255),
+      email VARCHAR(255),
+      phone VARCHAR(50),
+      ib_code VARCHAR(50) UNIQUE,
+      level_id VARCHAR(36),
+      status VARCHAR(20) DEFAULT 'active',
+      commission_earned DECIMAL(18,2) DEFAULT 0,
+      commission_pending DECIMAL(18,2) DEFAULT 0,
+      referrals INT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS ib_applications (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36),
+      name VARCHAR(255),
+      email VARCHAR(255),
+      phone VARCHAR(50),
+      experience TEXT,
+      status VARCHAR(20) DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS ib_levels (
+      id VARCHAR(36) PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      commission_rate DECIMAL(5,2) NOT NULL,
+      min_referrals INT DEFAULT 0,
+      description TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS ib_settings (
+      id INT PRIMARY KEY DEFAULT 1,
+      min_deposit DECIMAL(18,2) DEFAULT 0,
+      commission_delay_days INT DEFAULT 0,
+      auto_approve BOOLEAN DEFAULT false,
+      ib_registration_open BOOLEAN DEFAULT true
+    )
+  `);
+  // Ensure default settings row exists
+  await query(`INSERT INTO ib_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+}
+
+router.get("/ib/stats", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const [ibRow]   = await query(`SELECT COUNT(*) AS total, SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending FROM ib_partners`);
+    const [refRow]  = await query(`SELECT COALESCE(SUM(referrals),0) AS total FROM ib_partners`);
+    const [comRow]  = await query(`SELECT COALESCE(SUM(commission_earned),0) AS total, COALESCE(SUM(CASE WHEN DATE(created_at)=CURRENT_DATE THEN commission_earned ELSE 0 END),0) AS today FROM ib_partners`);
+    const [penRow]  = await query(`SELECT COALESCE(SUM(commission_pending),0) AS total, COUNT(*) AS requests FROM ib_partners WHERE commission_pending > 0`);
+    res.json({
+      success: true,
+      data: {
+        totalIBs:             Number(ibRow?.total  || 0),
+        pendingIBs:           Number(ibRow?.pending || 0),
+        totalReferrals:       Number(refRow?.total  || 0),
+        totalCommissions:     Number(comRow?.total  || 0),
+        todayCommissions:     Number(comRow?.today  || 0),
+        pendingWithdrawals:   Number(penRow?.total  || 0),
+        withdrawalRequests:   Number(penRow?.requests || 0),
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/ib/list", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const rows = await query(`SELECT * FROM ib_partners WHERE status = 'active' ORDER BY created_at DESC`);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/ib/applications", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const rows = await query(`SELECT * FROM ib_applications WHERE status = 'pending' ORDER BY created_at DESC`);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/ib/applications/:id/approve", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const { id } = req.params;
+    const [app] = await query(`SELECT * FROM ib_applications WHERE id = ?`, [id]);
+    if (!app) return res.status(404).json({ success: false, error: "Application not found" });
+
+    await query(`UPDATE ib_applications SET status = 'approved' WHERE id = ?`, [id]);
+
+    // Create IB partner record
+    const ibCode = "IB" + Math.random().toString(36).toUpperCase().slice(2, 8);
+    await query(
+      `INSERT INTO ib_partners (id, user_id, name, email, phone, ib_code, status) VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+      [uuidv4(), app.user_id || "", app.name, app.email, app.phone, ibCode]
+    );
+    res.json({ success: true, message: "Application approved" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/ib/applications/:id/reject", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const { id } = req.params;
+    await query(`UPDATE ib_applications SET status = 'rejected' WHERE id = ?`, [id]);
+    res.json({ success: true, message: "Application rejected" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/ib/levels", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const rows = await query(`
+      SELECT l.*, COUNT(p.id) AS ib_count
+      FROM ib_levels l
+      LEFT JOIN ib_partners p ON p.level_id = l.id
+      GROUP BY l.id
+      ORDER BY l.commission_rate ASC
+    `);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/ib/levels", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const { name, commission_rate, min_referrals, description } = req.body;
+    if (!name || !commission_rate) return res.status(400).json({ success: false, error: "Name and commission rate are required" });
+    const id = uuidv4();
+    await query(
+      `INSERT INTO ib_levels (id, name, commission_rate, min_referrals, description) VALUES (?, ?, ?, ?, ?)`,
+      [id, name, commission_rate, min_referrals || 0, description || ""]
+    );
+    res.json({ success: true, message: "Level created", data: { id } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/ib/settings", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const [row] = await query(`SELECT * FROM ib_settings WHERE id = 1`);
+    res.json({ success: true, data: row || {} });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/ib/settings", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const { min_deposit, commission_delay_days, auto_approve, ib_registration_open } = req.body;
+    await query(
+      `UPDATE ib_settings SET min_deposit = ?, commission_delay_days = ?, auto_approve = ?, ib_registration_open = ? WHERE id = 1`,
+      [min_deposit || 0, commission_delay_days || 0, auto_approve ? true : false, ib_registration_open ? true : false]
+    );
+    res.json({ success: true, message: "Settings saved" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// MAM & PAM (Copy Trade Management) routes
+// ─────────────────────────────────────────────────────────────
+
+async function ensureMamPamTables() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS mam_masters (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36),
+      name VARCHAR(255),
+      email VARCHAR(255),
+      strategy TEXT,
+      profit_share DECIMAL(5,2) DEFAULT 20,
+      min_copy_amount DECIMAL(18,2) DEFAULT 100,
+      total_pnl DECIMAL(18,2) DEFAULT 0,
+      followers INT DEFAULT 0,
+      copied_trades INT DEFAULT 0,
+      admin_pool DECIMAL(18,2) DEFAULT 0,
+      status VARCHAR(20) DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS mam_applications (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36),
+      name VARCHAR(255),
+      email VARCHAR(255),
+      strategy TEXT,
+      profit_share DECIMAL(5,2) DEFAULT 20,
+      min_copy_amount DECIMAL(18,2) DEFAULT 100,
+      status VARCHAR(20) DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS mam_followers (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36),
+      master_id VARCHAR(36),
+      follower_name VARCHAR(255),
+      master_name VARCHAR(255),
+      email VARCHAR(255),
+      copy_amount DECIMAL(18,2) DEFAULT 0,
+      total_profit DECIMAL(18,2) DEFAULT 0,
+      trades_copied INT DEFAULT 0,
+      status VARCHAR(20) DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+router.get("/mampam/stats", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const [mRow]  = await query(`SELECT COUNT(*) AS total, SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending FROM mam_masters`);
+    const [fRow]  = await query(`SELECT COUNT(*) AS total FROM mam_followers WHERE status='active'`);
+    const [tRow]  = await query(`SELECT COALESCE(SUM(copied_trades),0) AS total FROM mam_masters`);
+    const [oRow]  = await query(`SELECT COUNT(*) AS total FROM trades WHERE status='OPEN'`);
+    const [pRow]  = await query(`SELECT COALESCE(SUM(admin_pool),0) AS total FROM mam_masters`);
+    res.json({
+      success: true,
+      data: {
+        masterTraders:  Number(mRow?.total   || 0),
+        pendingMasters: Number(mRow?.pending  || 0),
+        totalFollowers: Number(fRow?.total    || 0),
+        copiedTrades:   Number(tRow?.total    || 0),
+        openTrades:     Number(oRow?.total    || 0),
+        adminPool:      Number(pRow?.total    || 0),
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/mampam/masters", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const rows = await query(`SELECT * FROM mam_masters ORDER BY created_at DESC`);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/mampam/masters/:id/status", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const { id } = req.params;
+    const { status } = req.body;
+    await query(`UPDATE mam_masters SET status = ? WHERE id = ?`, [status, id]);
+    res.json({ success: true, message: "Status updated" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/mampam/applications", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const rows = await query(`SELECT * FROM mam_applications WHERE status = 'pending' ORDER BY created_at DESC`);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/mampam/applications/:id/approve", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const { id } = req.params;
+    const [app] = await query(`SELECT * FROM mam_applications WHERE id = ?`, [id]);
+    if (!app) return res.status(404).json({ success: false, error: "Application not found" });
+    await query(`UPDATE mam_applications SET status = 'approved' WHERE id = ?`, [id]);
+    await query(
+      `INSERT INTO mam_masters (id, user_id, name, email, strategy, profit_share, min_copy_amount) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [uuidv4(), app.user_id || "", app.name, app.email, app.strategy, app.profit_share || 20, app.min_copy_amount || 100]
+    );
+    res.json({ success: true, message: "Application approved — master trader created" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/mampam/applications/:id/reject", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const { id } = req.params;
+    await query(`UPDATE mam_applications SET status = 'rejected' WHERE id = ?`, [id]);
+    res.json({ success: true, message: "Application rejected" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/mampam/followers", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const rows = await query(`SELECT * FROM mam_followers ORDER BY created_at DESC`);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 export default router;
 

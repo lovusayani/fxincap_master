@@ -27,6 +27,8 @@ import { UserSettings } from './pages/UserSettings'
 import { TradersList } from './pages/TradersList'
 import { SubAgentsList } from './pages/SubAgentsList'
 import { AccountTypes } from './pages/AccountTypes'
+import { IBProgram } from './pages/IBProgram'
+import { MamPam } from './pages/MamPam'
 
 function App() {
   return (
@@ -71,6 +73,8 @@ function App() {
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="server-settings" element={<ServerSettings />} />
             <Route path="miscellaneous-settings" element={<MiscellaneousSettings />} />
+            <Route path="ib-program" element={<IBProgram />} />
+            <Route path="mam-pam" element={<MamPam />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

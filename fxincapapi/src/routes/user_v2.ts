@@ -1545,5 +1545,253 @@ router.post("/beneficiary", verifyToken, async (req: AuthRequest, res: Response)
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// User: IB (Introducing Broker) routes
+// ─────────────────────────────────────────────────────────────
+
+// GET /ib/status — check user's IB application/partner status
+router.get("/ib/status", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+
+    // Check if already an active IB partner
+    const [partner] = await query(
+      `SELECT p.*, l.name AS level_name FROM ib_partners p
+       LEFT JOIN ib_levels l ON l.id = p.level_id
+       WHERE p.user_id = ? AND p.status = 'active' LIMIT 1`,
+      [userId]
+    );
+    if (partner) {
+      return res.json({
+        success: true,
+        data: {
+          status: "approved",
+          ib_code: partner.ib_code,
+          referrals: partner.referrals || 0,
+          commission_earned: partner.commission_earned || 0,
+          commission_pending: partner.commission_pending || 0,
+          level_name: partner.level_name || null,
+        }
+      });
+    }
+
+    // Check pending application
+    const [pending] = await query(
+      `SELECT id, status FROM ib_applications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+    if (pending) {
+      return res.json({ success: true, data: { status: pending.status === "rejected" ? "rejected" : "pending" } });
+    }
+
+    res.json({ success: true, data: { status: "none" } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /ib/apply — submit IB application
+router.post("/ib/apply", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { experience, phone } = req.body;
+
+    // Block duplicate pending applications
+    const [existing] = await query(
+      `SELECT id FROM ib_applications WHERE user_id = ? AND status = 'pending'`,
+      [userId]
+    );
+    if (existing) return res.status(400).json({ success: false, error: "You already have a pending IB application" });
+
+    const [user] = await query(`SELECT email, first_name, last_name FROM users WHERE id = ?`, [userId]);
+    const fullName = `${user?.first_name || ""} ${user?.last_name || ""}`.trim() || user?.email || "";
+
+    await query(
+      `INSERT INTO ib_applications (id, user_id, name, email, phone, experience, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+      [uuidv4(), userId, fullName, user?.email || "", phone || "", experience || ""]
+    );
+
+    res.json({ success: true, message: "IB application submitted successfully" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// User: MAM / PAM (Copy Trading) routes
+// ─────────────────────────────────────────────────────────────
+
+// GET /accounts — trader's own trading accounts (for dropdowns)
+router.get("/accounts", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const rows = await query(
+      `SELECT id, account_number, trading_mode, balance, currency, account_status FROM user_accounts WHERE user_id = ? AND account_status = 'active'`,
+      [userId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /mampam/masters — list active master traders
+router.get("/mampam/masters", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const rows = await query(`
+      SELECT m.*,
+        CASE WHEN f.id IS NOT NULL THEN true ELSE false END AS is_following
+      FROM mam_masters m
+      LEFT JOIN mam_followers f ON f.master_id = m.id AND f.user_id = ? AND f.status = 'active'
+      WHERE m.status = 'active'
+      ORDER BY m.followers DESC
+    `, [userId]);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /mampam/apply — apply to become a master trader
+router.post("/mampam/apply", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { name, strategy, account_id, profit_share } = req.body;
+    if (!name || !account_id) return res.status(400).json({ success: false, error: "Name and account are required" });
+
+    // Check not already applied
+    const [existing] = await query(
+      `SELECT id FROM mam_applications WHERE user_id = ? AND status = 'pending'`, [userId]
+    );
+    if (existing) return res.status(400).json({ success: false, error: "You already have a pending application" });
+
+    // Get user info for the application
+    const [user] = await query(`SELECT email, first_name, last_name FROM users WHERE id = ?`, [userId]);
+    const fullName = name || `${user?.first_name || ""} ${user?.last_name || ""}`.trim();
+
+    await query(
+      `INSERT INTO mam_applications (id, user_id, name, email, strategy, profit_share, min_copy_amount, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [uuidv4(), userId, fullName, user?.email || "", strategy || "", profit_share || 10, 100]
+    );
+    res.json({ success: true, message: "Application submitted successfully" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /mampam/follow/:masterId — start copying a master
+router.post("/mampam/follow/:masterId", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { masterId } = req.params;
+    const { account_id, copy_amount } = req.body;
+
+    const [master] = await query(`SELECT * FROM mam_masters WHERE id = ? AND status = 'active'`, [masterId]);
+    if (!master) return res.status(404).json({ success: false, error: "Master trader not found" });
+
+    // Check not already following
+    const [existing] = await query(
+      `SELECT id FROM mam_followers WHERE user_id = ? AND master_id = ? AND status = 'active'`,
+      [userId, masterId]
+    );
+    if (existing) return res.status(400).json({ success: false, error: "You are already following this master" });
+
+    const [user] = await query(`SELECT email, first_name, last_name FROM users WHERE id = ?`, [userId]);
+    const followerName = `${user?.first_name || ""} ${user?.last_name || ""}`.trim() || user?.email;
+
+    await query(
+      `INSERT INTO mam_followers (id, user_id, master_id, follower_name, master_name, email, copy_amount, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
+      [uuidv4(), userId, masterId, followerName, master.name, user?.email || "", copy_amount || 100]
+    );
+
+    // Increment master's follower count
+    await query(`UPDATE mam_masters SET followers = followers + 1 WHERE id = ?`, [masterId]);
+
+    res.json({ success: true, message: "Now copying this master trader" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /mampam/unfollow/:followId — stop copying
+router.delete("/mampam/unfollow/:followId", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { followId } = req.params;
+
+    const [follow] = await query(`SELECT * FROM mam_followers WHERE id = ? AND user_id = ?`, [followId, userId]);
+    if (!follow) return res.status(404).json({ success: false, error: "Subscription not found" });
+
+    await query(`UPDATE mam_followers SET status = 'inactive' WHERE id = ?`, [followId]);
+    await query(`UPDATE mam_masters SET followers = GREATEST(0, followers - 1) WHERE id = ?`, [follow.master_id]);
+
+    res.json({ success: true, message: "Stopped copying this master" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /mampam/subscriptions — user's active copy subscriptions
+router.get("/mampam/subscriptions", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const rows = await query(
+      `SELECT * FROM mam_followers WHERE user_id = ? ORDER BY created_at DESC`,
+      [userId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /mampam/trades — copied trades for this user (from masters they follow)
+router.get("/mampam/trades", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    // Get master IDs this user follows
+    const follows = await query(
+      `SELECT master_id, master_name FROM mam_followers WHERE user_id = ? AND status = 'active'`,
+      [userId]
+    );
+    if (!follows || follows.length === 0) return res.json({ success: true, data: [] });
+
+    const masterIds = follows.map((f: any) => f.master_id);
+    const masterNameMap: Record<string, string> = {};
+    follows.forEach((f: any) => { masterNameMap[f.master_id] = f.master_name; });
+
+    const masterUsers = await query(
+      `SELECT id FROM mam_masters WHERE id IN (${masterIds.map(() => "?").join(",")})`,
+      masterIds
+    );
+    if (!masterUsers || masterUsers.length === 0) return res.json({ success: true, data: [] });
+
+    const masterUserIds = masterUsers.map((m: any) => m.user_id).filter(Boolean);
+    if (masterUserIds.length === 0) return res.json({ success: true, data: [] });
+
+    const trades = await query(
+      `SELECT t.id, t.symbol, t.side, t.volume, t.entry_price, t.close_price,
+              COALESCE(t.final_pnl, t.pnl, 0) AS pnl, t.status, t.opened_at, t.user_id
+       FROM trades t
+       WHERE t.user_id IN (${masterUserIds.map(() => "?").join(",")})
+       ORDER BY t.opened_at DESC LIMIT 100`,
+      masterUserIds
+    );
+
+    const result = (trades || []).map((t: any) => {
+      const master = masterUsers.find((m: any) => m.user_id === t.user_id);
+      return { ...t, master_name: master ? masterNameMap[master.id] || "Master" : "Master" };
+    });
+
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 export default router;
 
