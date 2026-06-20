@@ -3,6 +3,7 @@ import { Breadcrumb } from '../components/Breadcrumb'
 import { Card } from '../components/Card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCaption } from '../components/ui/table'
 import { useAuth } from '../context/AuthContext'
+import { TraderAccountsPanel } from './TraderAccountsPanel'
 
 const MSIcon = ({ name, size = 20 }) => (
   <span
@@ -19,6 +20,7 @@ const MSIcon = ({ name, size = 20 }) => (
 
 export const AccountTypes = () => {
   const { token } = useAuth()
+  const [activeTab, setActiveTab] = useState('types')
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -229,62 +231,87 @@ export const AccountTypes = () => {
         </div>
       )}
 
-      <Card
-        title="Account Types"
-        footer={error ? `Error: ${error}` : loading ? 'Loading...' : `${rows.length} account type${rows.length === 1 ? '' : 's'}`}
-      >
-        <div className="mb-4">
+      <div className="mb-4 flex gap-1 border-b border-slate-700">
+        {[
+          { id: 'types', label: 'Account Types' },
+          { id: 'traders', label: 'Trader Accounts' },
+        ].map((tab) => (
           <button
-            onClick={openAddModal}
-            className="flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 transition-colors"
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
+              activeTab === tab.id
+                ? 'border-emerald-500 text-emerald-300'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
           >
-            <MSIcon name="add" size={18} />
-            Add Account Type
+            {tab.label}
           </button>
-        </div>
+        ))}
+      </div>
 
-        <Table>
-          <TableHeader>
-            <TableRow>
-              {columns.map((col) => (
-                <TableHead key={col.id || col.accessorKey || col.header}>
-                  {col.header}
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading ? (
+      {activeTab === 'types' ? (
+        <Card
+          title="Account Types"
+          footer={error ? `Error: ${error}` : loading ? 'Loading...' : `${rows.length} account type${rows.length === 1 ? '' : 's'}`}
+        >
+          <div className="mb-4">
+            <button
+              onClick={openAddModal}
+              className="flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 transition-colors"
+            >
+              <MSIcon name="add" size={18} />
+              Add Account Type
+            </button>
+          </div>
+
+          <Table>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={columns.length} className="text-center text-slate-400 py-8">
-                  Loading…
-                </TableCell>
+                {columns.map((col) => (
+                  <TableHead key={col.id || col.accessorKey || col.header}>
+                    {col.header}
+                  </TableHead>
+                ))}
               </TableRow>
-            ) : rows.length ? (
-              rows.map((row) => (
-                <TableRow key={row.id}>
-                  {columns.map((col) => (
-                    <TableCell key={col.id || col.accessorKey || col.header}>
-                      {col.cell
-                        ? typeof col.cell === 'function'
-                          ? col.cell(row[col.accessorKey] ?? '', row)
-                          : col.cell
-                        : row[col.accessorKey] ?? '—'}
-                    </TableCell>
-                  ))}
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={columns.length} className="text-center text-slate-400 py-8">
+                    Loading…
+                  </TableCell>
                 </TableRow>
-              ))
-            ) : (
-              <TableRow>
-                <TableCell colSpan={columns.length} className="text-center text-slate-400 py-8">
-                  {error ? `Error: ${error}` : 'No account types found'}
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-          <TableCaption>Total: {rows.length} account types</TableCaption>
-        </Table>
-      </Card>
+              ) : rows.length ? (
+                rows.map((row) => (
+                  <TableRow key={row.id}>
+                    {columns.map((col) => (
+                      <TableCell key={col.id || col.accessorKey || col.header}>
+                        {col.cell
+                          ? typeof col.cell === 'function'
+                            ? col.cell(row[col.accessorKey] ?? '', row)
+                            : col.cell
+                          : row[col.accessorKey] ?? '—'}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell colSpan={columns.length} className="text-center text-slate-400 py-8">
+                    {error ? `Error: ${error}` : 'No account types found'}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+            <TableCaption>Total: {rows.length} account types</TableCaption>
+          </Table>
+        </Card>
+      ) : (
+        <Card title="Trader Accounts">
+          <TraderAccountsPanel />
+        </Card>
+      )}
 
       {/* ── Add/Edit Modal ── */}
       {modalOpen && (

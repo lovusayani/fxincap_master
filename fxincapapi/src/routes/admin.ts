@@ -1553,6 +1553,208 @@ router.get("/traders/:userId/trading-accounts", verifyToken, async (req: AuthReq
 });
 
 // ==========================================
+// Trader Accounts — flat, trader-wise view of every account across all
+// traders, with per-account admin actions (ban / activate / modify / delete).
+// ==========================================
+router.get("/trader-accounts", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const offset = (page - 1) * limit;
+    const search = (req.query.search as string) || "";
+    const mode = (req.query.mode as string) || "";
+    const status = (req.query.status as string) || "";
+
+    await ensureAccountTypesTable();
+
+    const whereParts: string[] = [];
+    const values: any[] = [];
+    if (search) {
+      const like = `%${search}%`;
+      whereParts.push("(u.email LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ? OR ua.account_number LIKE ?)");
+      values.push(like, like, like, like);
+    }
+    if (mode) {
+      whereParts.push("ua.trading_mode = ?");
+      values.push(mode);
+    }
+    if (status) {
+      whereParts.push("ua.account_status = ?");
+      values.push(status);
+    }
+    const where = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+
+    const rows = (await query(
+      `
+      SELECT ua.id, ua.user_id, ua.account_number, ua.trading_mode, ua.balance, ua.equity,
+             ua.margin_free, ua.available_balance, ua.currency, ua.leverage, ua.is_active,
+             ua.account_status, ua.account_type_id, ua.created_at,
+             u.email, u.first_name, u.last_name,
+             at.name AS account_type_name
+      FROM user_accounts ua
+      JOIN users u ON u.id = ua.user_id
+      LEFT JOIN account_types at ON at.id = ua.account_type_id
+      ${where}
+      ORDER BY ua.created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+      `,
+      values
+    )) as any[];
+
+    const countRows = (await query(
+      `SELECT COUNT(*) AS total FROM user_accounts ua JOIN users u ON u.id = ua.user_id ${where}`,
+      values
+    )) as any[];
+    const total = Number(countRows?.[0]?.total || 0);
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      userId: row.user_id,
+      traderName: `${row.first_name || ""} ${row.last_name || ""}`.trim() || "—",
+      traderEmail: row.email,
+      accountNumber: row.account_number,
+      tradingMode: row.trading_mode,
+      balance: Number(row.balance || 0),
+      equity: Number(row.equity || 0),
+      freeMargin: Number(row.margin_free || 0),
+      availableBalance: Number(row.available_balance || 0),
+      currency: row.currency || "USD",
+      leverage: Number(row.leverage || 500),
+      isActive: Boolean(row.is_active),
+      status: row.account_status || "active",
+      accountTypeId: row.account_type_id,
+      accountTypeName: row.account_type_name || "Standard",
+      createdAt: row.created_at,
+    }));
+
+    res.json({ success: true, data, total, page, limit });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/trader-accounts/:id/ban", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await query("UPDATE user_accounts SET account_status = 'banned' WHERE id = ?", [req.params.id]);
+    res.json({ success: true, message: "Account banned" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/trader-accounts/:id/activate", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await query("UPDATE user_accounts SET account_status = 'active' WHERE id = ?", [req.params.id]);
+    res.json({ success: true, message: "Account activated" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/trader-accounts/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { balance, equity, leverage, accountTypeId } = req.body || {};
+
+    const sets: string[] = [];
+    const values: any[] = [];
+
+    if (balance !== undefined) {
+      const n = Number(balance);
+      if (!Number.isFinite(n) || n < 0) return res.status(400).json({ success: false, error: "Invalid balance" });
+      sets.push("balance = ?");
+      values.push(n);
+      // available_balance and margin_free both represent "free" balance in
+      // different code paths (legacy split column) — keep both consistent
+      // with the new balance; margin locked by open trades is preserved.
+      sets.push("available_balance = GREATEST(0, ? - locked_balance)");
+      values.push(n);
+      sets.push("margin_free = GREATEST(0, ? - locked_balance)");
+      values.push(n);
+    }
+    if (equity !== undefined) {
+      const n = Number(equity);
+      if (!Number.isFinite(n) || n < 0) return res.status(400).json({ success: false, error: "Invalid equity" });
+      sets.push("equity = ?");
+      values.push(n);
+    }
+    if (leverage !== undefined) {
+      const n = Number(leverage);
+      if (!Number.isFinite(n) || n <= 0) return res.status(400).json({ success: false, error: "Invalid leverage" });
+      sets.push("leverage = ?");
+      values.push(n);
+    }
+    if (accountTypeId !== undefined) {
+      if (accountTypeId !== null) {
+        const typeRows = (await query("SELECT id FROM account_types WHERE id = ? LIMIT 1", [accountTypeId])) as any[];
+        if (!Array.isArray(typeRows) || typeRows.length === 0) {
+          return res.status(404).json({ success: false, error: "Account type not found" });
+        }
+      }
+      sets.push("account_type_id = ?");
+      values.push(accountTypeId);
+    }
+
+    if (sets.length === 0) {
+      return res.status(400).json({ success: false, error: "No fields to update" });
+    }
+
+    values.push(id);
+    const updated = await query(`UPDATE user_accounts SET ${sets.join(", ")} WHERE id = ?`, values);
+
+    res.json({ success: true, message: "Account updated" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete("/trader-accounts/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const acctRows = (await query(
+      "SELECT user_id, trading_mode, is_active FROM user_accounts WHERE id = ? LIMIT 1",
+      [id]
+    )) as any[];
+    if (!Array.isArray(acctRows) || acctRows.length === 0) {
+      return res.status(404).json({ success: false, error: "Account not found" });
+    }
+    const account = acctRows[0];
+
+    const openTradeRows = (await query(
+      "SELECT COUNT(*) AS open_count FROM trades WHERE account_id = ? AND status = 'OPEN'",
+      [id]
+    )) as any[];
+    const openCount = Number(openTradeRows?.[0]?.open_count || 0);
+    if (openCount > 0) {
+      return res.status(409).json({
+        success: false,
+        error: `Cannot delete: this account has ${openCount} open trade${openCount === 1 ? "" : "s"}. Close them first.`,
+      });
+    }
+
+    await query("DELETE FROM user_accounts WHERE id = ?", [id]);
+
+    // If the deleted account was the active one for its mode, promote the
+    // most recently created remaining account of that mode so the trader
+    // isn't left without a resolvable account.
+    if (account.is_active) {
+      const siblings = (await query(
+        "SELECT id FROM user_accounts WHERE user_id = ? AND trading_mode = ? ORDER BY created_at DESC LIMIT 1",
+        [account.user_id, account.trading_mode]
+      )) as any[];
+      if (Array.isArray(siblings) && siblings.length > 0) {
+        await query("UPDATE user_accounts SET is_active = true WHERE id = ?", [siblings[0].id]);
+      }
+    }
+
+    res.json({ success: true, message: "Account deleted" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
 // Trader — Login as User (impersonate)
 // ==========================================
 router.post("/traders/:userId/login-as", verifyToken, async (req: AuthRequest, res: Response) => {

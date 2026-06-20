@@ -249,18 +249,16 @@ async function getQuoteWithFailover(symbol) {
     if (!loaded) return null;
   }
 
-  const attempted = new Set();
-  while (provider && !attempted.has(currentSettings.provider)) {
-    attempted.add(currentSettings.provider);
-    try {
-      const quote = await provider.getQuote(symbol);
-      if (quote) return quote;
-    } catch (error) {
-      providerLoadError = normalizeErrorMessage(error);
-    }
-
-    const switched = await activateNextProvider(`Quote unavailable for ${symbol}`, attempted);
-    if (!switched) break;
+  // A single quote miss (quota limit, unsupported symbol, etc.) must not tear down
+  // the shared streaming provider — that would drop live ticks for every other
+  // subscriber. Real connectivity failures already trigger failover via each
+  // provider's own onFailure hook (see createProviderInstance).
+  try {
+    const quote = await provider.getQuote(symbol);
+    if (quote) return quote;
+    providerLoadError = `Quote unavailable for ${symbol}`;
+  } catch (error) {
+    providerLoadError = normalizeErrorMessage(error);
   }
 
   return null;

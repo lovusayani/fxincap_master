@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { AuthRequest, verifyToken } from "./auth.js";
-import { query } from "../lib/database.js";
+import { query, getConnection } from "../lib/database.js";
 import { v4 as uuidv4 } from "uuid";
 import multer from "multer";
 import fs from "fs";
@@ -436,9 +436,11 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
       }
     }
 
-    // Fetch account by user_id and trading_mode
+    // Fetch the active account for this mode (a user may have several accounts per
+    // mode; exactly one is active at a time — see /accounts and /accounts/:id/activate).
+    // Banned accounts (admin action) are excluded even if still flagged is_active.
     const accountResults = await query(
-      "SELECT * FROM user_accounts WHERE user_id = $1 AND trading_mode = $2 LIMIT 1",
+      "SELECT * FROM user_accounts WHERE user_id = $1 AND trading_mode = $2 AND is_active = true AND account_status = 'active' LIMIT 1",
       [userId, mode]
     );
     
@@ -507,11 +509,11 @@ router.put("/trading-mode", verifyToken, async (req: AuthRequest, res) => {
     }
 
     const acctRows = await query(
-      "SELECT account_number, balance, equity, margin_free FROM user_accounts WHERE user_id = $1 AND trading_mode = $2 LIMIT 1",
+      "SELECT account_number, balance, equity, margin_free FROM user_accounts WHERE user_id = $1 AND trading_mode = $2 AND is_active = true AND account_status = 'active' LIMIT 1",
       [userId, tradingMode]
     );
     if (!Array.isArray(acctRows) || acctRows.length === 0) {
-      return res.status(404).json({ success: false, message: "Account not found for selected mode" });
+      return res.status(404).json({ success: false, message: "Account not found for selected mode, or it has been banned" });
     }
 
     const updated = await query(
@@ -574,12 +576,23 @@ router.get("/account-types", verifyToken, async (req: AuthRequest, res) => {
     await ensureAccountTypesTable();
 
     const type = (req.query.type as string) || "real";
-    const rows = await query(`
-      SELECT id, name, description, min_deposit, leverage, exposure_limit, is_demo, created_at
-      FROM account_types
-      WHERE is_demo = ?
-      ORDER BY created_at DESC
-    `, [type === "demo" ? true : false]) as any[];
+    const rows = (
+      type === "all"
+        ? await query(`
+            SELECT id, name, description, min_deposit, leverage, exposure_limit, is_demo, created_at
+            FROM account_types
+            ORDER BY is_demo ASC, created_at DESC
+          `)
+        : await query(
+            `
+            SELECT id, name, description, min_deposit, leverage, exposure_limit, is_demo, created_at
+            FROM account_types
+            WHERE is_demo = ?
+            ORDER BY created_at DESC
+          `,
+            [type === "demo" ? true : false]
+          )
+    ) as any[];
 
     const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
       id: row.id,
@@ -686,8 +699,8 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
 
     const realAccountNumber = `REAL-${String(userId).slice(0, 8).toUpperCase()}-${Date.now().toString().slice(-6)}`;
     await query(
-      "INSERT INTO user_accounts (id, user_id, account_number, balance, equity, margin_free, available_balance, trading_mode, currency, account_status) VALUES (?, ?, ?, ?, ?, ?, ?, 'real', 'USD', 'active')",
-      [uuidv4(), userId, realAccountNumber, 0, 0, 0, 0]
+      "INSERT INTO user_accounts (id, user_id, account_number, balance, equity, margin_free, available_balance, trading_mode, currency, account_status, account_type_id, leverage, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 'real', 'USD', 'active', ?, ?, true)",
+      [uuidv4(), userId, realAccountNumber, 0, 0, 0, 0, selectedAccountTypeId || null, leverage]
     );
 
     await query("UPDATE user_profiles SET selected_trading_mode = ? WHERE user_id = ?", ["real", userId]);
@@ -713,6 +726,215 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
   } catch (error: any) {
     console.error("[activate-real-account] ERROR:", error.message, error.stack);
     return res.status(500).json({ success: false, message: error.message || "Failed to activate real account, please try again later" });
+  }
+});
+
+// ==========================================
+// Multi-Account — a trader may hold several accounts (one per admin-defined
+// account type, across both demo and real). Exactly one account per mode is
+// "active" at a time; that's the one balance/trades resolve against.
+// ==========================================
+
+router.get("/accounts", verifyToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    const rows = (await query(
+      `SELECT ua.id, ua.account_number, ua.trading_mode, ua.balance, ua.equity, ua.margin_free,
+              ua.available_balance, ua.currency, ua.leverage, ua.is_active, ua.account_status,
+              ua.account_type_id, ua.created_at,
+              at.name AS account_type_name, at.description AS account_type_description,
+              at.min_deposit, at.exposure_limit
+       FROM user_accounts ua
+       LEFT JOIN account_types at ON at.id = ua.account_type_id
+       WHERE ua.user_id = $1
+       ORDER BY ua.trading_mode ASC, ua.is_active DESC, ua.created_at ASC`,
+      [userId]
+    )) as any[];
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      accountNumber: row.account_number,
+      tradingMode: row.trading_mode,
+      balance: Number(row.balance || 0),
+      equity: Number(row.equity || 0),
+      freeMargin: Number(row.margin_free || 0),
+      availableBalance: Number(row.available_balance || 0),
+      currency: row.currency || "USD",
+      leverage: Number(row.leverage || 500),
+      isActive: Boolean(row.is_active),
+      status: row.account_status,
+      accountTypeId: row.account_type_id,
+      accountTypeName: row.account_type_name || "Standard",
+      accountTypeDescription: row.account_type_description || null,
+      minDeposit: Number(row.min_deposit || 0),
+      exposureLimit: Number(row.exposure_limit || 0),
+      createdAt: row.created_at,
+    }));
+
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/accounts", verifyToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const { accountTypeId } = req.body || {};
+    if (!accountTypeId) {
+      return res.status(400).json({ success: false, message: "accountTypeId is required" });
+    }
+
+    await ensureAccountTypesTable();
+
+    const typeRows = (await query(
+      "SELECT id, name, leverage, is_demo FROM account_types WHERE id = ? LIMIT 1",
+      [accountTypeId]
+    )) as any[];
+    if (!Array.isArray(typeRows) || typeRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Account type not found" });
+    }
+    const accountType = typeRows[0];
+    const mode: "demo" | "real" = accountType.is_demo ? "demo" : "real";
+
+    const existingOfType = (await query(
+      "SELECT id FROM user_accounts WHERE user_id = ? AND account_type_id = ? LIMIT 1",
+      [userId, accountTypeId]
+    )) as any[];
+    if (Array.isArray(existingOfType) && existingOfType.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `You already have a ${accountType.name} account. Switch to it instead of opening another.`,
+        existingAccountId: existingOfType[0].id,
+      });
+    }
+
+    if (mode === "real") {
+      const settings = await getUserAccountSettings();
+      if (!settings.realAccountActivationEnabled) {
+        return res.status(403).json({
+          success: false,
+          message: "Real account activation is currently unavailable, please contact support for more information",
+        });
+      }
+      if (settings.kycRequiredForRealAccount) {
+        const profileRows = (await query(
+          "SELECT kyc_status FROM user_profiles WHERE user_id = ? LIMIT 1",
+          [userId]
+        )) as any[];
+        const kycStatus = String(
+          (Array.isArray(profileRows) && profileRows.length > 0 ? profileRows[0].kyc_status : "pending") || "pending"
+        ).toLowerCase();
+        if (!["approved", "verified"].includes(kycStatus)) {
+          return res.status(400).json({
+            success: false,
+            requiresKyc: true,
+            message: "Please complete your KYC verification to open a real account",
+          });
+        }
+      }
+    }
+
+    const accountId = uuidv4();
+    const prefix = mode === "real" ? "REAL" : "DEMO";
+    const accountNumber = `${prefix}-${String(userId).slice(0, 8).toUpperCase()}-${Date.now().toString().slice(-6)}`;
+    const leverage = Number(accountType.leverage || 500);
+
+    const conn = await getConnection();
+    try {
+      await conn.query("BEGIN");
+      // Newly opened account becomes the active one for its mode.
+      await conn.query("UPDATE user_accounts SET is_active = false WHERE user_id = $1 AND trading_mode = $2", [userId, mode]);
+      await conn.query(
+        `INSERT INTO user_accounts
+           (id, user_id, account_number, balance, equity, margin_free, available_balance,
+            trading_mode, currency, account_status, account_type_id, leverage, is_active)
+         VALUES ($1, $2, $3, 0, 0, 0, 0, $4, 'USD', 'active', $5, $6, true)`,
+        [accountId, userId, accountNumber, mode, accountType.id, leverage]
+      );
+      await conn.query("UPDATE user_profiles SET selected_trading_mode = $1 WHERE user_id = $2", [mode, userId]);
+      await conn.query("COMMIT");
+    } catch (txError) {
+      await conn.query("ROLLBACK").catch(() => {});
+      throw txError;
+    } finally {
+      conn.release();
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `${accountType.name} ${mode} account opened successfully`,
+      data: {
+        id: accountId,
+        accountNumber,
+        tradingMode: mode,
+        balance: 0,
+        equity: 0,
+        freeMargin: 0,
+        currency: "USD",
+        leverage,
+        accountTypeId: accountType.id,
+        accountTypeName: accountType.name,
+        isActive: true,
+      },
+    });
+  } catch (error: any) {
+    console.error("[POST /accounts] ERROR:", error.message);
+    res.status(500).json({ success: false, message: error.message || "Failed to open account" });
+  }
+});
+
+router.put("/accounts/:id/activate", verifyToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const { id } = req.params;
+
+    const acctRows = (await query(
+      "SELECT id, trading_mode, account_status FROM user_accounts WHERE id = ? AND user_id = ? LIMIT 1",
+      [id, userId]
+    )) as any[];
+    if (!Array.isArray(acctRows) || acctRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Account not found" });
+    }
+    const account = acctRows[0];
+    if (account.account_status !== "active") {
+      return res.status(400).json({ success: false, message: "This account is not available to trade" });
+    }
+    const mode = account.trading_mode;
+
+    const conn = await getConnection();
+    try {
+      await conn.query("BEGIN");
+      await conn.query("UPDATE user_accounts SET is_active = false WHERE user_id = $1 AND trading_mode = $2", [userId, mode]);
+      await conn.query("UPDATE user_accounts SET is_active = true WHERE id = $1", [id]);
+      await conn.query(
+        `UPDATE user_profiles SET selected_trading_mode = $1 WHERE user_id = $2
+         RETURNING user_id`,
+        [mode, userId]
+      ).then(async (r: any) => {
+        if (!r.rows || r.rows.length === 0) {
+          await conn.query("INSERT INTO user_profiles (id, user_id, selected_trading_mode) VALUES ($1, $2, $3)", [
+            uuidv4(),
+            userId,
+            mode,
+          ]);
+        }
+      });
+      await conn.query("COMMIT");
+    } catch (txError) {
+      await conn.query("ROLLBACK").catch(() => {});
+      throw txError;
+    } finally {
+      conn.release();
+    }
+
+    res.json({ success: true, message: "Account switched successfully", data: { id, tradingMode: mode } });
+  } catch (error: any) {
+    console.error("[PUT /accounts/:id/activate] ERROR:", error.message);
+    res.status(500).json({ success: false, message: error.message || "Failed to switch account" });
   }
 });
 

@@ -77,11 +77,10 @@ export default function TradingViewWidget({ symbol, theme = "dark", interval = "
 <body>
   <div class="tradingview-widget-container">
     <div class="tradingview-widget-container__widget"></div>
+    <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+    ${config}
+    </script>
   </div>
-  <script type="text/javascript">
-    var TradingViewConfig = ${config};
-  </script>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"></script>
 </body>
 </html>`,
         [config]
