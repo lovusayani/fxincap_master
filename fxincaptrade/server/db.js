@@ -27,11 +27,12 @@ function getSslConfig() {
   };
 }
 
+// No production host/user/database is defaulted here — see docs/SECURITY.md §3.
 const pool = new Pool({
-  host: process.env.PGHOST || 'kaka1fxincap-do-user-32897695-0.d.db.ondigitalocean.com',
+  host: process.env.PGHOST || '',
   port: parseInt(process.env.PGPORT || '25060', 10),
-  database: process.env.PGDATABASE || 'fxincapmain',
-  user: process.env.PGUSER || 'amitkaka',
+  database: process.env.PGDATABASE || '',
+  user: process.env.PGUSER || '',
   password: process.env.PGPASSWORD || '',
   ssl: getSslConfig(),
 });
