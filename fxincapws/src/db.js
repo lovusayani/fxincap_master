@@ -3,13 +3,19 @@ const { Pool } = pkg;
 import { DB, FINNHUB_API_KEY } from './config.js';
 
 let pool;
-const PROVIDER_ORDER = ['finnhub', 'twelvedata', 'binance'];
+/**
+ * Failover preference order. Infoway and TwelveData rank above Finnhub because
+ * both publish two-sided quotes; Finnhub emits a last price only, which this
+ * platform cannot settle against (docs/MARKET_DATA_ARCHITECTURE.md §3).
+ */
+const PROVIDER_ORDER = ['infoway', 'twelvedata', 'finnhub', 'binance'];
 
 function providerOrderSql(column = 'provider') {
   return `CASE ${column}
-    WHEN 'finnhub' THEN 0
+    WHEN 'infoway' THEN 0
     WHEN 'twelvedata' THEN 1
-    WHEN 'binance' THEN 2
+    WHEN 'finnhub' THEN 2
+    WHEN 'binance' THEN 3
     ELSE 99
   END`;
 }
@@ -68,6 +74,7 @@ export async function initSettingsTable() {
       { provider: 'finnhub',    endpoint: 'wss://ws.finnhub.io',                    notes: 'Finnhub WebSocket for stocks',          api_key: FINNHUB_API_KEY || '', enabled: true },
       { provider: 'twelvedata', endpoint: 'wss://ws.twelvedata.com/v1/quotes/price', notes: 'TwelveData WebSocket for forex/metals', api_key: '',                   enabled: false },
       { provider: 'binance',    endpoint: 'wss://stream.binance.com:9443/ws',        notes: 'Binance WebSocket for crypto',          api_key: '',                   enabled: false },
+      { provider: 'infoway',    endpoint: 'wss://data.infoway.io/ws',                notes: 'Infoway REST + WebSocket (depth/trade)', api_key: '',                  enabled: false },
     ];
 
     for (const prov of providers) {

@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "WebSocket price feed service for FXIncap (Finnhub/Binance)",
+  "description": "WebSocket price feed service for FXIncap (Infoway/TwelveData/Finnhub)",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node src/server.js"
+    "dev": "node src/server.js",
+    "test": "node --test src/**/*.test.js"
   },
   "dependencies": {
     "axios": "^1.7.7",

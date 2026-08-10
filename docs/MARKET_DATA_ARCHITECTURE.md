@@ -179,6 +179,51 @@ The TwelveData **WebSocket** path uses `payload.bid` / `payload.ask` when presen
 
 The last two are stubs that predate fxincapws. They are not used by the trading UI.
 
+## 7a. Infoway provider (implemented, local testing only)
+
+Added on `feature/infoway-market-data`. **Not enabled anywhere** — the `ws_api_keys`
+row is seeded `enabled = FALSE`.
+
+| | |
+| --- | --- |
+| Adapter | [fxincapws/src/providers/infoway.js](../fxincapws/src/providers/infoway.js) |
+| Raw socket | [fxincapws/src/providers/infoway-ws.js](../fxincapws/src/providers/infoway-ws.js) |
+| REST | `GET https://data.infoway.io/{business}/batch_depth/{codes}` (bid/ask) · `/batch_trade/{codes}` (last) |
+| REST auth | `apiKey` **request header** |
+| WebSocket | `wss://data.infoway.io/ws?business={business}&apikey={key}` |
+| WS auth | `apikey` **query parameter**, enforced at the upgrade handshake |
+| Subscribe | depth `{code:10003, trace, data:{codes}}` · trade `{code:10000, trace, data:{codes, includeTy:false}}` |
+| Push | depth `10005` `{s,t,a:[[px],[qty]],b:[[px],[qty]]}` · trade `10002` `{s,p,t,td,v,vw}` |
+| Heartbeat | `{code:10010, trace}` every 30 s (server drops after 60 s idle) |
+| Rate limit | 60 requests/minute per connection, heartbeats included |
+| Timestamps | milliseconds → divided to **seconds** in the adapter |
+
+**Depth is the primary channel.** The trade channel carries only `p` (last price)
+with no bid/ask — the same shape that makes Finnhub unusable here (§3). Depth
+supplies `b[0][0]` as best bid and `a[0][0]` as best ask; trade contributes `last`.
+A trade tick arriving before the first depth tick is held rather than emitted as a
+one-sided quote.
+
+**One connection per asset class.** Infoway exposes a separate `business` endpoint
+per class, so the adapter keeps a socket per business, created lazily:
+`common` (forex/metals/futures), `crypto`, `stock`, `japan`, `india`, `korea`.
+
+### ⚠ Two details the official documentation does not specify
+
+1. **Unsubscribe protocol.** The `subscribe-and-unsubscribe` section, both channel
+   pages and every code example document subscription only; no unsubscribe code is
+   published. `unsubscribe()` therefore removes the subscription **locally** — the
+   callback is dropped and ticks stop reaching the platform — without sending a
+   guessed message. The upstream feed continues until the socket closes. When
+   Infoway confirms the message, it goes in `infoway-ws.js` `removeSymbol()`, the
+   only place that needs to change.
+2. **Forex/metal symbol codes.** Crypto is confirmed as `BTCUSDT` (concatenated,
+   no separator) and the forex page lists `EURUSD`/`USDGBP`, but it also writes
+   `GBP/USD` in prose and shows no worked forex request. The adapter passes symbols
+   through unchanged, which matches the confirmed crypto form. Verify against
+   `GET /common/basic/symbols?type=FOREX` with a live key; if the codes differ, set
+   `INFOWAY_SYMBOL_MAP=XAUUSD=XAU/USD,...` rather than editing code.
+
 ## 8. Where Infoway (or any future provider) plugs in
 
 **One file, one registration, one database row. Nothing outside `fxincapws/` should change.**

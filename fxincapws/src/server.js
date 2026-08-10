@@ -7,12 +7,16 @@ import { initSettingsTable, getSettings, updateSettings, getAllProviders, getPro
 import { FinnhubProvider } from './providers/finnhub.js';
 import { BinanceProvider } from './providers/binance.js';
 import { TwelvedataProvider } from './providers/twelvedata.js';
+import { InfowayProvider } from './providers/infoway.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const SUPPORTED_RUNTIME_PROVIDERS = new Set(['finnhub', 'twelvedata']);
+const SUPPORTED_RUNTIME_PROVIDERS = new Set(['finnhub', 'twelvedata', 'infoway']);
+
+/** Providers accepted by the admin configuration endpoints. */
+const CONFIGURABLE_PROVIDERS = ['finnhub', 'binance', 'twelvedata', 'infoway'];
 
 let provider = null;
 let providerChain = [];
@@ -59,6 +63,9 @@ function createProviderInstance(candidate) {
   }
   if (candidate.provider === 'twelvedata') {
     return new TwelvedataProvider(candidate.api_key, options);
+  }
+  if (candidate.provider === 'infoway') {
+    return new InfowayProvider(candidate.api_key, options);
   }
   return new BinanceProvider(candidate.api_key);
 }
@@ -376,7 +383,7 @@ app.post('/admin/providers/:provider', async (req, res) => {
   const { provider: p } = req.params;
   const { api_key, enabled, clear_api_key } = req.body || {};
 
-  if (!['finnhub', 'binance', 'twelvedata'].includes(p)) {
+  if (!CONFIGURABLE_PROVIDERS.includes(p)) {
     return res.status(400).json({ success: false, error: 'Invalid provider' });
   }
 
@@ -431,7 +438,7 @@ app.get('/admin/settings', async (req, res) => {
 app.post('/admin/settings', async (req, res) => {
   if (!isAdminAuthorized(req)) return res.status(401).json({ success: false, error: 'Unauthorized' });
   const { provider: p, api_key } = req.body || {};
-  if (!['finnhub', 'binance', 'twelvedata'].includes(p)) return res.status(400).json({ success: false, error: 'Invalid provider' });
+  if (!CONFIGURABLE_PROVIDERS.includes(p)) return res.status(400).json({ success: false, error: 'Invalid provider' });
   try {
     await updateSettings({ provider: p, api_key: api_key || '' });
     await loadProvider(p);
