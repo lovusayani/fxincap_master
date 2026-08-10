@@ -16,7 +16,8 @@ INSERT INTO ws_api_keys (provider, api_key, endpoint, notes, enabled)
 VALUES
   ('finnhub', '', 'wss://ws.finnhub.io', 'Finnhub WebSocket', TRUE),
   ('twelvedata', '', 'wss://ws.twelvedata.com/v1/quotes/price', 'TwelveData WebSocket', FALSE),
-  ('binance', '', 'wss://stream.binance.com:9443/ws', 'Binance WebSocket', FALSE)
+  ('binance', '', 'wss://stream.binance.com:9443/ws', 'Binance WebSocket', FALSE),
+  ('infoway', '', 'wss://data.infoway.io/ws', 'Infoway REST + WebSocket (depth/trade)', FALSE)
 ON CONFLICT (provider) DO NOTHING;
 
 -- Set API keys via admin UI or: UPDATE ws_api_keys SET api_key = '...' WHERE provider = 'finnhub';
