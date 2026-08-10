@@ -8,6 +8,7 @@ import { fetchKycDocuments, fetchKycDocumentById, updateKycStatus } from "../ser
 import { getAutoCloseTimeoutMinutes, setAutoCloseTimeoutMinutes } from "../lib/trade-settings.js";
 import { ensureAccountTypesTable } from "../lib/account-types.js";
 import { getConnection, query } from "../lib/database.js";
+import { JWT_SECRET } from "../lib/env.js";
 import { v4 as uuidv4 } from "uuid";
 import multer from "multer";
 import fs from "fs";
@@ -1772,7 +1773,7 @@ router.post("/traders/:userId/login-as", verifyToken, async (req: AuthRequest, r
     const user = users[0];
     const token = jwt.sign(
       { id: user.id, email: user.email },
-      process.env.JWT_SECRET || "secret",
+      JWT_SECRET,
       { expiresIn: "2h" }
     );
 

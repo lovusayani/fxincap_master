@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import bcryptjs from "bcryptjs";
 import { query } from "../lib/database.js";
+import { JWT_SECRET } from "../lib/env.js";
 import { v4 as uuidv4 } from "uuid";
 import {
   createUserEmailVerification,
@@ -21,7 +22,7 @@ const numberRegex = /[0-9]/;
 const specialRegex = /[!@#$%^&*()\-_=+\[\]{};':"\\|,.<>/?]/;
 
 export interface AuthRequest extends Request {
-  user?: { id: string; email: string };
+  user?: { id: string; email: string; role?: string };
 }
 
 // Middleware
@@ -30,17 +31,43 @@ export async function verifyToken(req: AuthRequest, res: Response, next: any) {
   if (!token) return res.status(401).json({ success: false, error: "No token provided" });
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret") as any;
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
     // Normalize to { id, email } even if the payload used userId
     const id = decoded.id || decoded.userId;
     if (!id) {
       return res.status(401).json({ success: false, error: "Invalid token payload" });
     }
-    req.user = { id, email: decoded.email };
+    // `role` is carried through so requireAdmin can distinguish an admin token
+    // (issued by /api/admin-auth/login) from an ordinary user token. The claim
+    // alone is never sufficient — requireAdmin re-checks it against admin_users.
+    req.user = { id, email: decoded.email, role: decoded.role };
     next();
   } catch {
     res.status(401).json({ success: false, error: "Invalid or expired token" });
   }
+}
+
+/**
+ * Populates req.user when a valid bearer token is present, but does not reject
+ * when one is absent or invalid.
+ *
+ * Used ahead of requireInternalService on maintenance endpoints, which accept
+ * either a service token (no JWT) or administrator credentials (JWT).
+ */
+export async function optionalAuth(req: AuthRequest, _res: Response, next: any) {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return next();
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const id = decoded.id || decoded.userId;
+    if (id) {
+      req.user = { id, email: decoded.email, role: decoded.role };
+    }
+  } catch {
+    // Ignore: the downstream guard decides whether credentials were required.
+  }
+  next();
 }
 
 // ==========================================
@@ -311,7 +338,7 @@ router.post("/login", async (req: Request, res: Response) => {
       });
     }
 
-    const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET || "secret", {
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, {
       expiresIn: "7d",
     });
 
