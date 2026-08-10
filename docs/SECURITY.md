@@ -1,10 +1,33 @@
 # Security Audit
 
 Scope: static review of the repository at commit `0b7e87b`. Findings are ordered by severity.
-**Nothing in this document was fixed during the audit** — the task brief forbids changing
-authentication, business logic and production configuration. Each item states the minimal remedy.
-
 No secret values are reproduced here.
+
+## Remediation status
+
+The audit itself changed nothing. A follow-up task (branch `fix/security-and-pnl`) remediated the
+application-level findings:
+
+| # | Finding | Status |
+| --- | --- | --- |
+| §1 | `/api/admin/*` accepted any user JWT | ✅ **FIXED** — `requireAdmin` at the mount point |
+| §2 | Three unauthenticated trade-mutating endpoints | ✅ **FIXED** — `requireInternalService` |
+| §3 | Hard-coded production DB coordinates | ✅ **FIXED** — fail-fast env validation |
+| §4 | Insecure default secrets | ✅ **FIXED** — required, no fallbacks |
+| §5 | `GET /admin/settings` leaked the provider API key | ✅ **FIXED** — token gate + redaction |
+| §6.1 | Client-supplied prices settled trades | ✅ **FIXED** — server-authoritative prices |
+| §6.7 | Provider API keys returned to the admin browser | ✅ **FIXED** — redacted |
+| §6.11 | Admin token compared non-constant-time | ✅ **FIXED** — `timingSafeEqual` |
+| §7 | **Customer KYC documents in git history** | ⚠️ **OPEN** — see [SECURITY_INCIDENT_KYC_HISTORY.md](./SECURITY_INCIDENT_KYC_HISTORY.md) |
+| §6.2–6.6, 6.8–6.10, 6.12–6.13 | Remaining medium findings | ⬜ open — see §6 |
+
+> ⚠️ **Deployment prerequisite.** The fail-fast validation means fxincapapi and fxincap-ws now
+> **refuse to start** when a required variable is missing. Before deploying that branch, confirm the
+> server `.env` files define: `JWT_SECRET`, `INTERNAL_SERVICE_TOKEN`, `PGHOST`, `PGUSER`,
+> `PGPASSWORD`, `PGDATABASE` (fxincapapi) and `ADMIN_TOKEN`, `PGHOST`, `PGUSER`, `PGPASSWORD`,
+> `PGDATABASE` (fxincap-ws). See [ENVIRONMENT.md](./ENVIRONMENT.md).
+
+The original findings follow, retained as the record of what was found.
 
 ---
 

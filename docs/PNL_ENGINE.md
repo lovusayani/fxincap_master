@@ -1,7 +1,13 @@
 # P&L Engine
 
-Everything below is traced from [fxincapapi/src/lib/trading-engine.ts](../fxincapapi/src/lib/trading-engine.ts)
-and [fxincapapi/src/lib/database-trading.ts](../fxincapapi/src/lib/database-trading.ts).
+Everything below is traced from [fxincapapi/src/lib/trading-engine.ts](../fxincapapi/src/lib/trading-engine.ts),
+[fxincapapi/src/lib/price-sync.ts](../fxincapapi/src/lib/price-sync.ts) and
+[fxincapapi/src/lib/database-trading.ts](../fxincapapi/src/lib/database-trading.ts).
+
+> **Updated after the `fix/security-and-pnl` remediation.** Prices are now
+> server-authoritative: [market-price.ts](../fxincapapi/src/lib/market-price.ts) obtains executable
+> prices from fxincapws, and a price-sync worker values open positions and recomputes equity. The
+> browser no longer supplies any price that moves money. §3, §5 and §6 record what changed.
 
 ## 1. The single P&L formula
 
@@ -86,17 +92,37 @@ Where `closePrice` comes from:
 | SL/TP worker | `bid`/`ask` from fxincapws | Yes, but the worker is broken |
 | Auto-close timeout | `current_price ?? entry_price` | `current_price` is client-written |
 
-## 3. Unrealized P&L — the honest picture
+## 3. Unrealized P&L
 
-There is **no server-side unrealized-P&L engine.** No worker recomputes floating P&L for open trades.
+**Server-side, on an interval.** [price-sync.ts](../fxincapapi/src/lib/price-sync.ts) runs every
+`PRICE_SYNC_POLL_MS` (default 5 s) and, for every open trade:
 
-The `trades` table carries `pnl` and `pnl_percentage` columns, but:
+1. fetches one server quote per distinct symbol from fxincapws;
+2. marks the position at its **executable close price** (BUY at bid, SELL at ask);
+3. computes P&L through the same `calculatePnL()` used at settlement;
+4. persists `current_price`, `pnl` and `pnl_percentage`;
+5. accumulates floating P&L per account and rewrites `equity` (see §5).
+
+Symbols without a fresh quote are skipped and logged — a stale position keeps its last values rather
+than being marked at a fabricated price.
 
 | Column | Written by | When |
 | --- | --- | --- |
-| `current_price` | `updateTradeCurrentPrice()` via `POST /api/trades/price-update` | only when a client posts |
-| `pnl_percentage` | same statement | only when a client posts |
-| `pnl` | **nothing** | never, for open trades |
+| `current_price` | price-sync worker | every `PRICE_SYNC_POLL_MS`, from server prices |
+| `pnl` | price-sync worker | same |
+| `pnl_percentage` | price-sync worker | same |
+
+### What this replaced
+
+| Column | Previously written by | Problem |
+| --- | --- | --- |
+| `current_price` | `POST /api/trades/price-update` — **unauthenticated** | any caller could set any trade's price |
+| `pnl_percentage` | same statement | only when a client happened to post |
+| `pnl` | **nothing** | never written for open trades; consumers read a stale default |
+
+`updateTradeRealtime()` in `trading-engine.ts` remains exported and uncalled — the worker supersedes
+it. `POST /api/trades/price-update` still exists but now requires an internal service token or
+administrator credentials, and is a maintenance tool rather than the primary mechanism.
 
 `updateTradeCurrentPrice()` writes the percentage with an inline SQL expression:
 
@@ -163,36 +189,56 @@ Exposed by `GET /api/user/balance` as:
 | `leverage` | `user_profiles.leverage`, clamped to `1..100` |
 | `currency` | `user_accounts.currency`, default `USD` |
 
-### ⚠ Equity is not computed
+### Equity
 
-The industry definition is `equity = balance + Σ unrealized P&L`. In this codebase `equity` is only
-ever written by:
+`equity = balance + Σ unrealized P&L of that account's open trades`, recomputed by the price-sync
+worker on the same interval as position valuation. Accounts with no open trades are reconciled back
+to `equity = balance` by `reconcileFlatAccountEquity()`, so a flat account cannot keep a stale
+floating figure forever.
 
-- registration ([auth.ts:131,153](../fxincapapi/src/routes/auth.ts#L131)) — set to the opening balance
-- admin balance edits ([admin.ts:466,1515,1678](../fxincapapi/src/routes/admin.ts#L466))
+It remains a **stored** column rather than a derived one — computing it on read would have meant
+touching every balance-reporting endpoint, a far larger change than the security work warranted. The
+stored value is now maintained rather than abandoned.
 
-No code path adds floating P&L to it, and closing a trade updates `balance` but **not** `equity`.
-Equity therefore drifts permanently out of step with balance after the first closed trade.
-
-`TODO: verify business rule` — whether `equity` is intended to be a derived figure. If so it should be
-computed on read as `balance + Σ open-trade P&L` rather than stored.
+Previously `equity` was written only at registration
+([auth.ts:131,153](../fxincapapi/src/routes/auth.ts#L131)) and by admin balance edits
+([admin.ts](../fxincapapi/src/routes/admin.ts)); nothing added floating P&L and closing a trade
+updated `balance` but not `equity`, so it drifted permanently after the first close.
 
 ### Margin level / stop-out
 
 Not implemented. There is no margin-level percentage, no margin call, and no stop-out liquidation
 anywhere in the codebase. The only automatic close is the `FORCED_TIMEOUT` worker.
 
-## 6. Integrity risks
+## 6. Integrity — before and after
 
-| # | Risk | Detail |
+| # | Risk | Status |
 | --- | --- | --- |
-| 1 | `POST /api/trades/price-update` has **no `verifyToken`** | Any unauthenticated caller can set `current_price` and `pnl_percentage` on **any** `tradeId`. Because the auto-close worker closes at `current_price`, this is a direct path to manipulating realized P&L. [trades.ts:383](../fxincapapi/src/routes/trades.ts#L383) |
-| 2 | `closePrice` on manual close is client-supplied | `PUT /api/trades/:id/close` accepts the price from the request body with no bounds check against a server-side quote |
-| 3 | `entryPrice` on open is client-supplied | Same class of issue at the other end of the trade |
-| 4 | `trades.pnl` never updated for open trades | Any consumer trusting that column reads a stale value |
-| 5 | `equity` never recomputed | User-visible figure diverges from reality |
-| 6 | `getAccountInfo().totalPnL` not scoped to `account_id` | Demo P&L leaks into real-account reporting |
+| 1 | `POST /api/trades/price-update` unauthenticated | ✅ **FIXED** — requires an internal service token or admin credentials |
+| 2 | `closePrice` on manual close client-supplied | ✅ **FIXED** — the request body value is ignored; the server resolves the executable close price |
+| 3 | `entryPrice` on open client-supplied | ✅ **FIXED** — ignored; the server resolves the executable open price and returns it in the response |
+| 4 | `trades.pnl` never updated for open trades | ✅ **FIXED** — written by the price-sync worker |
+| 5 | `equity` never recomputed | ✅ **FIXED** — recomputed per account, reconciled when flat |
+| 6 | `getAccountInfo().totalPnL` not scoped to `account_id` | ⬜ **open** — demo P&L still aggregates with real-account reporting |
 
-Items 1–3 together mean the P&L of a trade is, end to end, determined by values the client chose.
-None of these were changed in this documentation pass; fixing them alters live trading behaviour and
-requires explicit approval.
+### Price resolution rules
+
+`resolveServerPrice()` in [trades.ts](../fxincapapi/src/routes/trades.ts) and
+`getSettlementPrice()` in [market-price.ts](../fxincapapi/src/lib/market-price.ts):
+
+| Action | Price used |
+| --- | --- |
+| Open BUY | ask |
+| Open SELL | bid |
+| Close BUY | bid |
+| Close SELL | ask |
+
+Quotes older than `PRICE_MAX_AGE_MS` (default 30 s) are refused. When no fresh price exists the
+operation returns **503** rather than settling — a client price or a fabricated one is never
+substituted.
+
+> **Operational consequence.** Trading now depends on fxincapws having a working provider. If no
+> provider can supply quotes, opens and closes are refused. This is deliberate: settling at an
+> unverifiable price is worse than refusing. Confirm a working provider (currently `twelvedata` —
+> `finnhub` publishes no bid/ask) is enabled before relying on it. See
+> [MARKET_DATA_ARCHITECTURE.md](./MARKET_DATA_ARCHITECTURE.md) §3.

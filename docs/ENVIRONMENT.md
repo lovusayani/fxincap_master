@@ -53,16 +53,19 @@ Template: [fxincapapi/.env.example](../fxincapapi/.env.example).
 | --- | --- | --- |
 | `PORT` | `3000` in code | PM2 injects `7000`. The example file says `6000` — stale. |
 | `NODE_ENV` | — | |
-| `JWT_SECRET` | falls back to `"secret"` | **must be set** — see [AUTHENTICATION.md](./AUTHENTICATION.md) |
+| `JWT_SECRET` | **required, no fallback** | signing key for user and admin JWTs |
+| `INTERNAL_SERVICE_TOKEN` | **required, no fallback** | guards `/api/trades/price-update` and `/api/trades/admin/*`, presented as `x-internal-token` |
 | `CORS_ORIGIN` / `CORS_ORIGINS` | empty | comma-separated allowlist. **Empty = allow any origin** |
 
 **Trading workers**
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `WS_QUOTE_BASE_URL` | `http://127.0.0.1:4040` | fxincapws HTTP quotes for SL/TP |
+| `WS_QUOTE_BASE_URL` | `http://127.0.0.1:4040` | fxincapws quotes — the authoritative server-side price source |
 | `SL_TP_POLL_MS` | `4000` | SL/TP sweep interval |
 | `TRADE_AUTO_CLOSE_POLL_MS` | `15000` | auto-close sweep interval |
+| `PRICE_SYNC_POLL_MS` | `5000` | open-position valuation + equity recalculation interval |
+| `PRICE_MAX_AGE_MS` | `30000` | max quote age accepted for settlement; older ⇒ operation refused |
 
 **Integrations** — `SENDGRID_API_KEY`, `SENDGRID_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
 `SMTP_PASSWORD`, `VERIFICATION_URL`, `OXAPAY_API_KEY`, `OXAPAY_WEBHOOK_SECRET`, `METAAPI_TOKEN`,
@@ -91,21 +94,26 @@ Templates: [.env.example](../fxincaptrade/.env.example) (current, PostgreSQL) an
 
 ## 5. fxincapws
 
-No `.env.example` exists — create one from this table.
+Template: [fxincapws/.env.example](../fxincapws/.env.example).
 
-| Variable | Default in code | Purpose |
+| Variable | Required | Purpose |
 | --- | --- | --- |
-| `WS_PORT` | `4040` | HTTP + WebSocket port |
-| `ADMIN_TOKEN` | `changeme-admin-token` | `/admin/*` gate; must equal `WS_ADMIN_TOKEN` on the admin server |
-| `FINNHUB_API_KEY` | empty | seed value for the `finnhub` row only |
-| `FINNHUB_WEBHOOK_SECRET` | empty | `/webhook/finnhub`; **when empty the check is skipped** |
-| `PGHOST`/`DB_HOST`, `PGPORT`/`DB_PORT`, `PGUSER`/`DB_USER`, `PGPASSWORD`/`DB_PASSWORD`, `PGDATABASE`/`DB_NAME` | ⚠ hard-coded fallbacks | must point at the same database as fxincapapi |
-| `PGSSLMODE`/`DB_SSLMODE` | `require` | |
+| `WS_PORT` | no (`4040`) | HTTP + WebSocket port |
+| `ADMIN_TOKEN` | **yes** | `/admin/*` gate; must equal `WS_ADMIN_TOKEN` on the admin server |
+| `PGHOST`/`DB_HOST` | **yes** | same database as fxincapapi |
+| `PGUSER`/`DB_USER` | **yes** | |
+| `PGPASSWORD`/`DB_PASSWORD` | **yes** | |
+| `PGDATABASE`/`DB_NAME` | **yes** | |
+| `PGPORT`/`DB_PORT` | no (`25060`) | |
+| `PGSSLMODE`/`DB_SSLMODE` | no (`require`) | |
+| `FINNHUB_API_KEY` | no | seed value for the `finnhub` row only |
+| `FINNHUB_WEBHOOK_SECRET` | no | `/webhook/finnhub`; **when empty the check is skipped** |
 
-⚠ [fxincapws/src/config.js](../fxincapws/src/config.js) hard-codes a real managed-database hostname,
-port and username as fallbacks. A machine with no `.env` will attempt to connect to that host. This
-is reproducible — see [BASELINE.md](./BASELINE.md) §4. Runtime provider API keys are **not** env vars;
-they live in `ws_api_keys`.
+The service validates these at boot and exits with a listing of anything missing. The previous
+hard-coded production database host and `changeme-admin-token` default are gone.
+
+Runtime provider API keys are **not** env vars — they live in `ws_api_keys` and are managed from
+Admin → Server Settings.
 
 ## 6. fxincapadmin
 
@@ -131,21 +139,40 @@ proxy.
 `NODE_ENV`, `PORT` (PM2 injects `4000`), `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_DASHBOARD_URL`,
 `JWT_SECRET`. The example file still points at `*.suimfx.world` defaults.
 
-## 8. Values that must be changed before they are trusted
+## 8. Required variables — services refuse to start without them
+
+The insecure fallbacks are gone. `fxincapapi/src/lib/env.ts` and `fxincapws/src/config.js` validate
+configuration at boot and exit with a listing of everything missing.
+
+**fxincapapi**
+
+| Variable | Was | Now |
+| --- | --- | --- |
+| `JWT_SECRET` | `"secret"` / `'your-super-secret-jwt-key-…'` | **required** |
+| `INTERNAL_SERVICE_TOKEN` | did not exist | **required** — guards trade maintenance endpoints |
+| `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | hard-coded production cluster | **required** (or `DATABASE_URL`) |
+
+**fxincap-ws**
+
+| Variable | Was | Now |
+| --- | --- | --- |
+| `ADMIN_TOKEN` | `changeme-admin-token` | **required** |
+| `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | hard-coded production cluster | **required** (`DB_*` aliases accepted) |
+
+> **Deploy prerequisite:** verify these exist on the server *before* deploying, or the affected
+> service will not come back up. Template: [fxincapws/.env.example](../fxincapws/.env.example).
+
+## 9. Values that still need attention
 
 | Variable | Insecure default | Impact |
 | --- | --- | --- |
-| `JWT_SECRET` (fxincapapi) | `"secret"` | forgeable user tokens |
-| `JWT_SECRET` (adminAuth) | `'your-super-secret-jwt-key-change-in-production'` | forgeable admin tokens |
-| `ADMIN_TOKEN` (fxincapws) | `changeme-admin-token` | open provider admin API |
-| `WS_ADMIN_TOKEN` (admin) | `changeme-admin-token` | matching pair of the above |
+| `WS_ADMIN_TOKEN` (admin server) | `changeme-admin-token` | must be set to match fxincap-ws `ADMIN_TOKEN` |
 | `CORS_ORIGIN` | empty ⇒ any origin | no cross-origin restriction |
 | `PGSSL_REJECT_UNAUTHORIZED` | `false` | unverified TLS chain to the database |
-| `PGHOST`/`PGUSER` (ws, trade, api) | real production hostnames | see [SECURITY.md](./SECURITY.md) §3 |
 | `ADMIN_API_URL` (admin) | `https://api.suimfx.world` | admin traffic to a legacy domain |
 | `FINNHUB_WEBHOOK_SECRET` | empty ⇒ check skipped | unauthenticated webhook |
 
-## 9. Setting env on the server
+## 10. Setting env on the server
 
 ```bash
 cd /path/to/repo

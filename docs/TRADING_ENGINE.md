@@ -183,39 +183,33 @@ comment ("a single mid price misses real fill prices and can skip valid triggers
 
 `tradePriceLevel()` treats `null`, `''`, non-finite and `≤ 0` as "no level set".
 
-### ⚠ The worker that drives it is broken
+### ✅ The worker defect that stopped it — fixed
 
-`processAllStopLossTakeProfit()` polls fxincapws:
+`processAllStopLossTakeProfit()` used to read the quote envelope one level too high:
 
 ```ts
-const res  = await fetch(`${base}/quote/${encodeURIComponent(symbol)}`);
 const data = await res.json() as { bid?: unknown; ask?: unknown };
-bid = Number(data.bid);
+bid = Number(data.bid);                               // undefined → NaN
 if (!Number.isFinite(bid) || bid <= 0) continue;      // ← always taken
 ```
 
-But `GET /quote/:symbol` on fxincapws responds
-([fxincapws/src/server.js:398](../fxincapws/src/server.js#L398)):
+fxincapws responds `{ success, quote: { bid, ask, … }, provider }`, so `data.bid` was always
+`undefined` and **every symbol was skipped — server-side SL/TP never executed.**
 
-```json
-{ "success": true, "quote": { "symbol": "...", "bid": 0, "ask": 0, "mid": 0, "last": 0, "time": 0 }, "provider": "twelvedata" }
-```
+The worker now obtains prices through
+[`getServerQuote()`](../fxincapapi/src/lib/market-price.ts), which parses the envelope correctly and
+tolerates both shapes. Regression tests: `src/lib/market-price.test.ts`.
 
-`data.bid` is `undefined` → `Number(undefined)` is `NaN` → every symbol is skipped. **Server-side
-SL/TP never executes.** The correct read is `data.quote.bid` / `data.quote.ask`.
+The same bug existed in the frontend HTTP quote fallback
+([useMarketStream.ts](../fxincaptrade/client/hooks/useMarketStream.ts)) and is also fixed.
 
-This is a genuine production defect, not a documentation artefact. It was **not** fixed in this
-documentation pass — fixing it changes live trading behaviour and needs explicit approval plus a
-staging test. It is listed in [BASELINE.md](./BASELINE.md) and the remaining-work section of the
-audit report.
-
-Manual/administrative entry points that bypass the broken worker and do work:
+Manual/administrative entry points:
 
 - `POST /api/trades/admin/check-sl-tp` — body supplies `bid`/`ask` directly.
-- `POST /api/trades/admin/process-sl-tp-all` — invokes the same broken poller.
+- `POST /api/trades/admin/process-sl-tp-all` — invokes the (now working) sweep.
 
-Neither is protected by `verifyToken` ([trades.ts:347](../fxincapapi/src/routes/trades.ts#L347),
-[:372](../fxincapapi/src/routes/trades.ts#L372)). See [SECURITY.md](./SECURITY.md).
+Both previously had **no authentication at all**; both now require an internal service token
+(`x-internal-token`) or active administrator credentials. See [SECURITY.md](./SECURITY.md) §2.
 
 ## 10. Auto-close on timeout
 
@@ -259,16 +253,18 @@ comes from [migrations/001_multi_account_support.sql](../fxincapapi/migrations/0
 uses `/api/trades/*`; `positions` is a parallel, largely unused model retained from the earlier
 schema. `TODO: verify business rule` — whether `positions` still carries live production rows.
 
-## 13. Summary of known trading-engine risks
+## 13. Known trading-engine risks — status
 
-| # | Finding | Severity |
+| # | Finding | Status |
 | --- | --- | --- |
-| 1 | SL/TP worker reads `data.bid` instead of `data.quote.bid` — server-side SL/TP never fires | High |
-| 2 | `entryPrice` is client-supplied and never validated against a server-side price | High |
-| 3 | `POST /api/trades/admin/*` endpoints have no authentication | High |
-| 4 | `getRequiredMargin()` returns 0 on malformed input instead of rejecting | Medium |
-| 5 | Auto-close falls back to a 2-minute timeout and closes at entry price when `current_price` is NULL | Medium |
-| 6 | Orders never convert to trades | Medium (may be intended) |
-| 7 | `equity` is never recomputed from open P&L — see [PNL_ENGINE.md](./PNL_ENGINE.md) | Medium |
+| 1 | SL/TP worker read `data.bid` instead of `data.quote.bid` — SL/TP never fired | ✅ **FIXED** (§9) |
+| 2 | `entryPrice` client-supplied, never validated | ✅ **FIXED** — server resolves the entry price |
+| 3 | `POST /api/trades/admin/*` had no authentication | ✅ **FIXED** — internal service token or admin |
+| 4 | `getRequiredMargin()` returned 0 on malformed input | ✅ **FIXED** — returns `null`; callers reject |
+| 5 | Auto-close closed at entry price when `current_price` was NULL | ✅ **FIXED** — settles at the live server price, or skips |
+| 6 | Orders never convert to trades | ⬜ open (may be intended) |
+| 7 | `equity` never recomputed from open P&L | ✅ **FIXED** — see [PNL_ENGINE.md](./PNL_ENGINE.md) §5 |
+| 8 | Auto-close still falls back to a **2-minute** timeout when unconfigured | ⬜ open — `TODO: verify business rule` |
 
-None of these were changed in this documentation pass.
+Fixed on branch `fix/security-and-pnl`. The 2-minute default (item 8) was left alone: changing it is
+a business-rule decision, not a security fix.
