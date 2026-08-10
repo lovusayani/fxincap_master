@@ -36,6 +36,10 @@ export const ServerSettings = () => {
         enabled: provMap.twelvedata?.enabled,
       },
       { key: 'binance', name: 'Binance', url: 'wss://stream.binance.com:9443/ws', enabled: provMap.binance?.enabled },
+      // Infoway rejects the upgrade with 401 unless ?apikey= is present, so this
+      // probe reports reachability only — as it now does for every provider,
+      // since keys are no longer sent to the browser.
+      { key: 'infoway', name: 'Infoway', url: 'wss://data.infoway.io/ws?business=common', enabled: provMap.infoway?.enabled },
     ]
   }, [providers])
 
