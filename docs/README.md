@@ -4,6 +4,10 @@ Start at the root [README.md](../README.md) for the platform overview.
 
 ## By task
 
+**"I'm continuing work from another PC"**
+→ [DEVELOPMENT_HANDOVER.md](./DEVELOPMENT_HANDOVER.md) — current branch, what is done,
+what is next, and the local `.env` you need. Start here.
+
 **"I'm new here"**
 1. [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md) — what the platform is, what it deliberately does not do
 2. [ARCHITECTURE.md](./ARCHITECTURE.md) — five services and who owns what
@@ -36,6 +40,7 @@ Start at the root [README.md](../README.md) for the platform overview.
 
 | Document | Contents |
 | --- | --- |
+| [DEVELOPMENT_HANDOVER.md](./DEVELOPMENT_HANDOVER.md) | **Current state**: branch, completed work, next task, local setup |
 | [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md) | Responsibilities, data ownership, boundaries, failure behaviour, glossary |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Service topology, ports, request lifecycles, ownership |
 | [MARKET_DATA_ARCHITECTURE.md](./MARKET_DATA_ARCHITECTURE.md) | Provider adapters, normalized quote, failover, symbol mapping, **future provider integration** |
