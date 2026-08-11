@@ -36,10 +36,10 @@ export const ServerSettings = () => {
         enabled: provMap.twelvedata?.enabled,
       },
       { key: 'binance', name: 'Binance', url: 'wss://stream.binance.com:9443/ws', enabled: provMap.binance?.enabled },
-      // Infoway rejects the upgrade with 401 unless ?apikey= is present, so this
-      // probe reports reachability only — as it now does for every provider,
-      // since keys are no longer sent to the browser.
-      { key: 'infoway', name: 'Infoway', url: 'wss://data.infoway.io/ws?business=common', enabled: provMap.infoway?.enabled },
+      // Infoway requires an API key for its upstream WebSocket. Keep that key
+      // server-side: use the authenticated Quote Test or Internal Stream Test
+      // below rather than exposing it in a browser WebSocket URL.
+      { key: 'infoway', name: 'Infoway', url: 'wss://data.infoway.io/ws?business=common', enabled: provMap.infoway?.enabled, serverSideKey: true },
     ]
   }, [providers])
 
@@ -130,6 +130,17 @@ export const ServerSettings = () => {
   }
 
   const testSocketEndpoint = useCallback((target) => {
+    if (target.serverSideKey) {
+      return Promise.resolve({
+        status: target.enabled ? 'configured' : 'skipped',
+        latencyMs: null,
+        checkedAt: new Date().toISOString(),
+        message: target.enabled
+          ? 'Authenticated by the FXIncap WS service. Use Quote Test or Internal Stream Test to verify live prices.'
+          : 'Inactive — enable Infoway in WS Provider Settings to use it.',
+      })
+    }
+
     const needsKey = target.key !== 'binance'
     const hasKeyInUrl =
       (target.url && (target.url.includes('token=') || target.url.includes('apikey='))) || false
@@ -806,6 +817,8 @@ export const ServerSettings = () => {
                       const statusColor =
                         status === 'online'
                           ? 'text-emerald-300'
+                          : status === 'configured'
+                            ? 'text-emerald-300'
                           : status === 'pending'
                             ? 'text-amber-300'
                             : status === 'skipped'
