@@ -196,7 +196,7 @@ The provider automatically:
 ### Connect
 
 ```javascript
-const ws = new WebSocket('wss://ws.fxincap.com/stream');
+const ws = new WebSocket('wss://ws.ncapfx.com/stream');
 
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);

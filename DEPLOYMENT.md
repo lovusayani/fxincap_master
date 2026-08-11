@@ -32,13 +32,13 @@ fxfx/
 ### Webhook flow
 
 1. **Push** to the configured branch on GitHub  
-2. **GitHub** POSTs to **`https://fxincap.com/hooks/deploy`** (existing webhook; nginx terminates TLS and proxies to **`deploy/webhook-server.cjs`** on **`DEPLOY_PORT`** default **9010**) with **`X-Hub-Signature-256`**  
+2. **GitHub** POSTs to **`https://ncapfx.com/hooks/deploy`** (existing webhook; nginx terminates TLS and proxies to **`deploy/webhook-server.cjs`** on **`DEPLOY_PORT`** default **9010**) with **`X-Hub-Signature-256`**
 3. **`webhook-server.cjs`** verifies the secret and runs **`deploy-prod.sh`**  
 4. **`install-prod.sh`** builds all apps with **`VITE_API_URL`** from **`.deploy.env`**
 
 ### GitHub repository webhook (already configured — do not add a duplicate)
 
-- **Payload URL:** **`https://fxincap.com/hooks/deploy`**  
+- **Payload URL:** **`https://ncapfx.com/hooks/deploy`**
 - **Content type:** `application/json`  
 - **Secret:** must match **`DEPLOY_WEBHOOK_SECRET`** in server **`.deploy.env`** (same secret you already set in GitHub)  
 - **Events:** Just the push event  
@@ -98,7 +98,7 @@ sudo chown deploy:deploy /var/www/fxincap
 
 ### Step 3: Align secret with the existing webhook
 
-Your payload URL is already **`https://fxincap.com/hooks/deploy`**. On the server, **`DEPLOY_WEBHOOK_SECRET`** in **`.deploy.env`** must be the **same** string as the **Secret** on that GitHub webhook.
+Your payload URL is **`https://ncapfx.com/hooks/deploy`**. On the server, **`DEPLOY_WEBHOOK_SECRET`** in **`.deploy.env`** must be the **same** string as the **Secret** on that GitHub webhook.
 
 ## 📋 Server Setup Requirements
 
@@ -229,9 +229,9 @@ pm2 reload all
 3. **Restrict** webhook URL (firewall / nginx TLS) and use HTTPS in production
 4. **Monitor** `pm2 logs fxincap-deploy-webhook` after each push
 
-## 📝 Deployment (webhook already at fxincap.com)
+## 📝 Deployment (webhook at ncapfx.com)
 
-1. On the server: ensure **`.deploy.env`** exists and **`DEPLOY_WEBHOOK_SECRET`** matches GitHub (**`https://fxincap.com/hooks/deploy`**), plus **`DEPLOY_BRANCH`** and **`VITE_API_URL`**
+1. On the server: ensure **`.deploy.env`** exists and **`DEPLOY_WEBHOOK_SECRET`** matches GitHub (**`https://ncapfx.com/hooks/deploy`**), plus **`DEPLOY_BRANCH`** and **`VITE_API_URL`**
 2. **`bash run-prod.sh`** if PM2 / webhook is not running
 3. Push to **`DEPLOY_BRANCH`** — GitHub calls the **existing** webhook; no new webhook needed
 4. **`pm2 logs fxincap-deploy-webhook`** to confirm **`deploy-prod.sh`** ran
@@ -244,11 +244,11 @@ Replace the path with your real deploy directory.
 cd /var/www/fxfx   # or your path
 git pull
 bash setup-server-deploy-env.sh   # creates .deploy.env only if absent
-nano .deploy.env   # DEPLOY_WEBHOOK_SECRET must match GitHub secret for https://fxincap.com/hooks/deploy
+nano .deploy.env   # DEPLOY_WEBHOOK_SECRET must match GitHub secret for https://ncapfx.com/hooks/deploy
 bash run-prod.sh
 ```
 
-Do **not** create another GitHub webhook; keep using **`https://fxincap.com/hooks/deploy`**.
+Update the existing GitHub webhook to **`https://ncapfx.com/hooks/deploy`** after the new nginx/TLS endpoint is live.
 
 ## 🆘 Need Help?
 

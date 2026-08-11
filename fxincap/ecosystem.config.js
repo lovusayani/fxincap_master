@@ -10,8 +10,8 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 4000,
-        NEXT_PUBLIC_API_URL: 'https://fxincap.com',
-        NEXT_PUBLIC_DASHBOARD_URL: 'https://fxincap.com'
+        NEXT_PUBLIC_API_URL: 'https://api.ncapfx.com',
+        NEXT_PUBLIC_DASHBOARD_URL: 'https://trade.ncapfx.com'
       },
       error_file: '/home/fxincap/htdocs/fxincap.com/logs/err.log',
       out_file: '/home/fxincap/htdocs/fxincap.com/logs/out.log',

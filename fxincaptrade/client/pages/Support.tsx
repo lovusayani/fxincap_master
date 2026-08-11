@@ -54,7 +54,7 @@ export default function SupportPage() {
         <div className="bg-white/5 border border-white/10 rounded-xl p-4 mb-5 flex gap-4">
           <div className="flex-1 text-center">
             <p className="text-xs text-gray-500 mb-1">Email</p>
-            <p className="text-sm text-white">support@fxincap.com</p>
+            <p className="text-sm text-white">support@ncapfx.com</p>
           </div>
           <div className="w-px bg-white/10" />
           <div className="flex-1 text-center">

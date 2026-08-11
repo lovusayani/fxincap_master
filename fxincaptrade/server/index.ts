@@ -66,7 +66,7 @@ export function createServer() {
       status: "running",
       endpoints: {
         frontend: "https://trade.suimfx.world",
-        live_api: "https://api.fxincap.com",
+        live_api: "https://api.ncapfx.com",
         local_api: "http://localhost:3000",
         health: "/api/ping",
         auth: "/api/auth/register, /api/auth/login",
@@ -83,7 +83,7 @@ export function createServer() {
       version: "1.0.0",
       description: "Production trading platform API",
       servers: [
-        { url: "https://api.fxincap.com", description: "Live production API" },
+        { url: "https://api.ncapfx.com", description: "Live production API" },
         { url: "https://trade.suimfx.world", description: "Production app server" },
         { url: "http://localhost:3000", description: "Local development" },
       ],

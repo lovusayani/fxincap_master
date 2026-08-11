@@ -242,7 +242,7 @@ export const MiscellaneousSettings = () => {
                   </Select>
                 </div>
 
-                <p className="text-xs text-slate-400">These values sync to trade.fxincap.com through style-settings API.</p>
+                <p className="text-xs text-slate-400">These values sync to trade.ncapfx.com through style-settings API.</p>
 
                 <div className="flex flex-wrap gap-2 pt-2">
                   <Button onClick={handleSave} disabled={!unsavedChanges || saving}>

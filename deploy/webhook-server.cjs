@@ -1,6 +1,6 @@
 /**
  * GitHub push webhook → deploy-prod.sh
- * Production is usually exposed as https://fxincap.com/hooks/deploy (nginx → this process on DEPLOY_PORT).
+ * Production is usually exposed as https://ncapfx.com/hooks/deploy (nginx → this process on DEPLOY_PORT).
  * Path must match DEPLOY_PATH (default /hooks/deploy). Do not add a second endpoint; reuse the existing GitHub webhook.
  */
 const http = require("http");
