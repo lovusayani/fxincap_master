@@ -502,9 +502,8 @@ export default function App() {
         "16px": "16px",
       };
 
-      const resolvedTheme = ["dark", "light"].includes(data.themeMode)
-        ? data.themeMode
-        : "dark";
+      // Dark is the platform default; only an explicit light setting overrides it.
+      const resolvedTheme = data.themeMode === "light" ? "light" : "dark";
 
       const topbarKey = data.topbarBgColor || data.headerColor || "default";
       const resolvedTopbar =
