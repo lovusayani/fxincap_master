@@ -504,7 +504,7 @@ export default function App() {
 
       const resolvedTheme = ["dark", "light"].includes(data.themeMode)
         ? data.themeMode
-        : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        : "dark";
 
       const topbarKey = data.topbarBgColor || data.headerColor || "default";
       const resolvedTopbar =

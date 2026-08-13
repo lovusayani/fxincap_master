@@ -1,5 +1,7 @@
 import { Router, Response } from "express";
-import { AuthRequest, verifyToken } from "./auth.js";
+import { AuthRequest, verifyToken, optionalAuth } from "./auth.js";
+import { requireInternalService } from "../middleware/adminAuth.js";
+import { getServerQuote, isFresh, executablePrice } from "../lib/market-price.js";
 import { getConnection, query } from "../lib/database.js";
 import {
   validateTradeOpen,
@@ -22,17 +24,57 @@ import {
 
 const router: Router = Router();
 
+/**
+ * Resolve the price a trade opens or closes at.
+ *
+ * The browser is not trusted as the source of a financial price. The server
+ * obtains the executable price from fxincapws; a client-supplied value is only
+ * a hint and is never used for settlement. When no fresh server price exists the
+ * operation is refused rather than settled at a client or fabricated price.
+ *
+ * See docs/PNL_ENGINE.md §6 and docs/MARKET_DATA_ARCHITECTURE.md.
+ */
+async function resolveServerPrice(
+  symbol: string,
+  side: string,
+  action: "OPEN" | "CLOSE"
+): Promise<{ price: number } | { error: string }> {
+  const quote = await getServerQuote(symbol);
+
+  if (!quote) {
+    return {
+      error:
+        "Market price unavailable for this symbol. Trading is temporarily unavailable — please try again shortly.",
+    };
+  }
+
+  if (!isFresh(quote)) {
+    return {
+      error: "Market price is stale. Trading is temporarily unavailable — please try again shortly.",
+    };
+  }
+
+  return { price: executablePrice(quote, side, action) };
+}
+
 // Open new trade
 router.post("/open", verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, error: "Unauthorized" });
-    const { symbol, side, volume, entryPrice, takeProfit, stopLoss, leverage } = req.body;
+    const { symbol, side, volume, takeProfit, stopLoss, leverage } = req.body;
 
-    // Validate inputs
-    if (!symbol || !side || !volume || !entryPrice) {
+    // Validate inputs. `entryPrice` from the request body is deliberately
+    // ignored — the server sets the entry price.
+    if (!symbol || !side || !volume) {
       return res.status(400).json({ success: false, error: "Missing required fields" });
     }
+
+    const priced = await resolveServerPrice(String(symbol), String(side), "OPEN");
+    if ("error" in priced) {
+      return res.status(503).json({ success: false, error: priced.error });
+    }
+    const entryPrice = priced.price;
 
     // Validate trade
     const validation = await validateTradeOpen(
@@ -63,7 +105,9 @@ router.post("/open", verifyToken, async (req: AuthRequest, res: Response) => {
     );
 
     if (result.success) {
-      res.json({ success: true, tradeId: result.tradeId });
+      // Return the executed entry price so the client can reconcile what it
+      // displayed against what the server actually filled at.
+      res.json({ success: true, tradeId: result.tradeId, entryPrice });
     } else {
       res.status(400).json({ success: false, error: result.error });
     }
@@ -117,11 +161,7 @@ router.put("/:id/close", verifyToken, async (req: AuthRequest, res: Response) =>
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, error: "Unauthorized" });
     const tradeId = parseInt(req.params.id);
-    const { closePrice, reason } = req.body;
-
-    if (!closePrice) {
-      return res.status(400).json({ success: false, error: "Close price required" });
-    }
+    const { reason } = req.body;
 
     // Get trade and verify ownership
     const trade = await getTradeById(tradeId);
@@ -133,12 +173,20 @@ router.put("/:id/close", verifyToken, async (req: AuthRequest, res: Response) =>
       return res.status(403).json({ success: false, error: "Unauthorized" });
     }
 
+    // `closePrice` from the request body is deliberately ignored — a client must
+    // not choose the price its own position settles at.
+    const priced = await resolveServerPrice(String(trade.symbol), String(trade.side), "CLOSE");
+    if ("error" in priced) {
+      return res.status(503).json({ success: false, error: priced.error });
+    }
+    const closePrice = priced.price;
+
     // Close trade
     const closeReason = typeof reason === "string" && reason.trim() ? reason.trim() : "MANUAL_CLOSE";
     const result = await closeTrade(tradeId, closePrice, closeReason);
 
     if (result.success) {
-      res.json({ success: true, finalPnL: result.finalPnL });
+      res.json({ success: true, finalPnL: result.finalPnL, closePrice });
     } else {
       res.status(400).json({ success: false, error: result.error });
     }
@@ -343,8 +391,10 @@ router.get("/stats/summary", verifyToken, async (req: AuthRequest, res: Response
   }
 });
 
-// Admin: Check and execute SL/TP for one trade (optional: called by price service)
-router.post("/admin/check-sl-tp", async (req: AuthRequest, res: Response) => {
+// Internal/admin: Check and execute SL/TP for one trade.
+// Guarded by requireInternalService — it can close a position at a supplied
+// bid/ask and was previously reachable with no credential at all.
+router.post("/admin/check-sl-tp", optionalAuth, requireInternalService, async (req: AuthRequest, res: Response) => {
   try {
     const { tradeId, bid, ask, currentPrice } = req.body;
 
@@ -368,8 +418,8 @@ router.post("/admin/check-sl-tp", async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Admin: Run SL/TP scan for all open trades (same logic as background worker)
-router.post("/admin/process-sl-tp-all", async (_req: AuthRequest, res: Response) => {
+// Internal/admin: Run SL/TP scan for all open trades (same logic as background worker)
+router.post("/admin/process-sl-tp-all", optionalAuth, requireInternalService, async (_req: AuthRequest, res: Response) => {
   try {
     const out = await processAllStopLossTakeProfit();
     res.json({ success: true, ...out });
@@ -379,8 +429,17 @@ router.post("/admin/process-sl-tp-all", async (_req: AuthRequest, res: Response)
   }
 });
 
-// Admin: Update trade price
-router.post("/price-update", async (req: AuthRequest, res: Response) => {
+/**
+ * Internal/admin: force a price update for one trade.
+ *
+ * This was unauthenticated and accepted any tradeId with any price. Because the
+ * auto-close worker settled at `current_price`, it was a direct route to
+ * manipulating another user's realized P&L.
+ *
+ * Open positions are now valued by the server-side price-sync worker
+ * (lib/price-sync.ts); this endpoint remains only as a maintenance tool.
+ */
+router.post("/price-update", optionalAuth, requireInternalService, async (req: AuthRequest, res: Response) => {
   try {
     const { tradeId, currentPrice } = req.body;
 

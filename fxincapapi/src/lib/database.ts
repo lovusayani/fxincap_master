@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { parse as parseConnectionString } from "pg-connection-string";
 import { Pool } from "pg";
+import { DATABASE_URL, PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE } from "./env.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 for (const envPath of [path.join(process.cwd(), ".env"), path.resolve(__dirname, "../../.env")]) {
@@ -81,16 +82,20 @@ function getSslConfig(): false | { rejectUnauthorized: boolean; ca?: string } {
   return { rejectUnauthorized: true };
 }
 
-const connectionString = process.env.DATABASE_URL;
+const connectionString = DATABASE_URL || undefined;
 
+// No production host/user/database is defaulted here. Missing values are a
+// configuration error and are reported by assertEnv() at boot — a service that
+// silently connects to a hard-coded production cluster is a security defect.
+// See docs/SECURITY.md §3.
 const poolConfig = connectionString
   ? poolConfigFromDatabaseUrl(connectionString)
   : {
-      host: process.env.PGHOST || "kaka1fxincap-do-user-32897695-0.d.db.ondigitalocean.com",
-      port: parseInt(process.env.PGPORT || "25060"),
-      user: process.env.PGUSER || "amitkaka",
-      password: process.env.PGPASSWORD || "",
-      database: process.env.PGDATABASE || "fxincapmain",
+      host: PGHOST,
+      port: PGPORT,
+      user: PGUSER,
+      password: PGPASSWORD,
+      database: PGDATABASE,
       ssl: getSslConfig(),
     };
 

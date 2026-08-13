@@ -1,6 +1,7 @@
 import { Router, Response } from "express";
 import { AuthRequest, verifyToken } from "./auth.js";
 import { query } from "../lib/database.js";
+import { getServerQuote, isFresh, executablePrice } from "../lib/market-price.js";
 import { v4 as uuidv4 } from "uuid";
 
 const router: Router = Router();
@@ -88,13 +89,31 @@ router.post("/close", verifyToken, async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, error: "positionId required" });
     }
 
-    const posResults = await query("SELECT * FROM positions WHERE id = ? AND user_id = ?", [id, userId]);
+    const posResults = await query(
+      `SELECT p.*, s.symbol AS symbol_code
+         FROM positions p
+         LEFT JOIN symbols s ON p.symbol_id = s.id
+        WHERE p.id = ? AND p.user_id = ?`,
+      [id, userId]
+    );
     if (!Array.isArray(posResults) || posResults.length === 0) {
       return res.status(404).json({ success: false, error: "Position not found" });
     }
 
     const position = posResults[0] as any;
-    const closePrice = req.body?.closePrice ?? position.close_price ?? position.open_price;
+
+    // `closePrice` from the request body is deliberately ignored — a client must
+    // not choose the price its own position settles at. The previous fallback
+    // chain (body → close_price → open_price) could also settle at the opening
+    // price for exactly zero P&L. See docs/PNL_ENGINE.md §6.
+    const quote = await getServerQuote(String(position.symbol_code || ""));
+    if (!quote || !isFresh(quote)) {
+      return res.status(503).json({
+        success: false,
+        error: "Market price unavailable for this symbol. Please try again shortly.",
+      });
+    }
+    const closePrice = executablePrice(quote, String(position.position_type || "BUY"), "CLOSE");
 
     await query("UPDATE positions SET status = 'closed', close_price = ? WHERE id = ?", [closePrice, id]);
 

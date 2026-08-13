@@ -4,6 +4,12 @@ import cors from "cors";
 import { createServer as createHttpServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
+
+// Configuration is validated at module evaluation inside lib/env.ts, which runs
+// before lib/database.ts builds its Pool. A missing JWT_SECRET, database
+// coordinate or internal service token stops the process there with a listing of
+// everything that is missing. See docs/SECURITY.md §3 and §4.
+import { SL_TP_POLL_MS, TRADE_AUTO_CLOSE_POLL_MS, PRICE_SYNC_POLL_MS } from "./lib/env.js";
 import { testConnection } from "./lib/database.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -30,6 +36,9 @@ import healthRoutes from "./routes/health.js";
 import emailRoutes from "./routes/email.js";
 import { getAutoCloseTimeoutMinutes } from "./lib/trade-settings.js";
 import { autoCloseExpiredTrades, processAllStopLossTakeProfit } from "./lib/trading-engine.js";
+import { syncOpenTradePrices, reconcileFlatAccountEquity } from "./lib/price-sync.js";
+import { verifyToken } from "./routes/auth.js";
+import { requireAdmin } from "./middleware/adminAuth.js";
 
 const uploadsPath = path.resolve(__dirname, "../uploads");
 
@@ -124,7 +133,31 @@ app.use("/api/positions", positionRoutes);
 app.use("/api/trades", tradeRoutes);
 app.use("/api/history", historyRoutes);
 app.use("/api/orders", orderRoutes);
-app.use("/api/admin", adminRoutes);
+/**
+ * Administrator authorization boundary.
+ *
+ * Every /api/admin/* route previously relied on `verifyToken` alone — the user
+ * authentication middleware — so any customer's JWT was accepted on endpoints
+ * that set balances, change passwords and impersonate traders.
+ * See docs/SECURITY.md §1.
+ *
+ * One documented exemption: GET /api/admin/style-settings is public platform
+ * branding, fetched by the trading client (fxincaptrade/client/App.tsx) and the
+ * admin sidebar before a session exists. It is read-only and carries no
+ * customer or credential data. Its POST counterpart is admin-only.
+ */
+const PUBLIC_ADMIN_GETS = new Set(["/style-settings"]);
+
+app.use(
+  "/api/admin",
+  (req: Request, res: Response, next) => {
+    if (req.method === "GET" && PUBLIC_ADMIN_GETS.has(req.path)) {
+      return next();
+    }
+    return verifyToken(req, res, () => requireAdmin(req, res, next));
+  },
+  adminRoutes
+);
 app.use("/api/admin-auth", adminAuthRoutes);
 app.use("/api/mam", mamRoutes);
 app.use("/api/pamm", pammRoutes);
@@ -137,7 +170,7 @@ app.use("/api/support", supportRoutes);
 app.use("/api/health", healthRoutes);
 app.use("/api/email", emailRoutes);
 
-const autoClosePollMs = Number(process.env.TRADE_AUTO_CLOSE_POLL_MS || 15000);
+const autoClosePollMs = TRADE_AUTO_CLOSE_POLL_MS;
 let autoCloseWorkerRunning = false;
 
 setInterval(async () => {
@@ -161,7 +194,37 @@ setInterval(async () => {
   }
 }, autoClosePollMs);
 
-const slTpPollMs = Number(process.env.SL_TP_POLL_MS || 4000);
+/**
+ * Server-side valuation worker.
+ *
+ * Values every open position from fxincapws prices and persists current_price,
+ * pnl, pnl_percentage and account equity. This is what makes the server — not
+ * the browser — the source of truth for open-position P&L; the client-driven
+ * /api/trades/price-update path is now an authenticated maintenance endpoint
+ * rather than the primary mechanism. See docs/PNL_ENGINE.md.
+ */
+let priceSyncRunning = false;
+
+setInterval(async () => {
+  if (priceSyncRunning) return;
+  priceSyncRunning = true;
+  try {
+    const result = await syncOpenTradePrices();
+    if (result.symbolsUnavailable > 0) {
+      console.warn(
+        `[PRICE] ${result.symbolsUnavailable}/${result.symbols} symbol(s) had no fresh server quote; ` +
+          `those positions were not revalued`
+      );
+    }
+    await reconcileFlatAccountEquity();
+  } catch (error) {
+    console.error("[PRICE] Price sync worker failed:", error);
+  } finally {
+    priceSyncRunning = false;
+  }
+}, PRICE_SYNC_POLL_MS);
+
+const slTpPollMs = SL_TP_POLL_MS;
 let slTpWorkerRunning = false;
 
 setInterval(async () => {

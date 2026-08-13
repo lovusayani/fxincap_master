@@ -133,6 +133,15 @@ router.post("/", verifyToken, async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, error: balanceResult.error || "Unable to verify margin" });
     }
 
+    // getRequiredMargin returns null for inputs that are not a valid trade. It
+    // previously returned 0, which reserved no margin instead of rejecting.
+    if (requiredMargin == null) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid volume, price or leverage for margin calculation",
+      });
+    }
+
     if (availableBalance <= 0) {
       return res.status(400).json({
         success: false,

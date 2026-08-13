@@ -1,355 +1,161 @@
-# FXIncap Multi-Provider WebSocket Service
+# fxincap-ws — Market Data Service
 
-Real-time market data aggregation service with support for multiple data providers.
+Real-time market data aggregation for the FXIncap platform. Connects to one upstream provider at a
+time, normalizes its quotes, and fans them out over WebSocket and REST.
 
-## Features
+**Full documentation:** [docs/MARKET_DATA_ARCHITECTURE.md](../docs/MARKET_DATA_ARCHITECTURE.md) ·
+[docs/WEBSOCKET.md](../docs/WEBSOCKET.md)
 
-- **Multi-Provider Architecture**: Finnhub, TwelveData, and Binance support
-- **Admin Panel**: Enable/disable providers and configure API keys via REST API
-- **WebSocket Streaming**: Real-time quotes via `/stream` endpoint
-- **REST Fallback**: Automatic fallback to polling when WebSocket unavailable
-- **Database-Driven Config**: All settings stored in MySQL for persistence
+## At a glance
 
----
+| | |
+| --- | --- |
+| Port | `4040` (`WS_PORT`) |
+| Runtime | Node.js, ESM, no build step |
+| PM2 process | `fxincap-ws` → `node src/server.js` |
+| Database | **PostgreSQL**, table `ws_api_keys`, created and seeded on boot |
+| Providers | Finnhub · TwelveData · Binance (stub) |
+| WebSocket | `ws://HOST:4040/stream` |
 
-## Quick Start
+## Quick start
 
-### 1. Database Setup
+```bash
+pnpm install
+pnpm dev            # or: pnpm start
 
-The service automatically creates the `api_keys` table on startup:
-
-```sql
-CREATE TABLE api_keys (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  provider VARCHAR(50) NOT NULL UNIQUE,
-  api_key LONGTEXT,
-  enabled BOOLEAN DEFAULT 0,
-  endpoint VARCHAR(255),
-  notes TEXT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+curl http://localhost:4040/health
+curl http://localhost:4040/quote/XAUUSD
 ```
 
-### 2. Start the Service
+### Configuration
+
+`.env` in this directory:
+
+```
+WS_PORT=4040
+ADMIN_TOKEN=YOUR_ADMIN_TOKEN          # must match WS_ADMIN_TOKEN on the admin server
+FINNHUB_API_KEY=                      # seeds the finnhub row only
+FINNHUB_WEBHOOK_SECRET=               # empty disables webhook verification
+
+PGHOST=YOUR_DB_HOST                   # same database as fxincapapi
+PGPORT=25060
+PGUSER=YOUR_DB_USER
+PGPASSWORD=YOUR_DB_PASSWORD
+PGDATABASE=YOUR_DB_NAME
+PGSSLMODE=require
+```
+
+`DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` are accepted as fallbacks.
+
+> ⚠ **Always set the `PG*` variables.** [src/config.js](./src/config.js) hard-codes a production
+> database host as its fallback, so an unconfigured process will try to reach it. See
+> [docs/SECURITY.md](../docs/SECURITY.md) §3.
+
+**Provider API keys are not environment variables.** They live in the `ws_api_keys` table and are
+managed from Admin → Server Settings. For a fresh database:
+
+```bash
+psql "$DATABASE_URL" -f sql/seed_ws_api_keys.sql
+```
+
+## WebSocket
+
+```
+ws://HOST:4040/stream          # no authentication
+```
+
+```jsonc
+// client → server
+{"action":"subscribe","symbol":"XAUUSD"}
+{"action":"unsubscribe","symbol":"XAUUSD"}
+
+// server → client
+{"type":"quote","symbol":"XAUUSD","bid":…,"ask":…,"mid":…,"last":…,"time":…,"provider":"twelvedata"}
+{"type":"last","symbol":"XAUUSD","bid":…,"ask":…,"mid":…,"last":…,"time":…}
+{"type":"error","message":"…"}
+```
+
+`quote` is a one-off snapshot on subscribe; `last` is the streaming tick. Full protocol, including
+reconnect and heartbeat behaviour: [docs/WEBSOCKET.md](../docs/WEBSOCKET.md).
+
+## HTTP
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/` · `/health` | none | provider status, client count, uptime |
+| GET | `/quote/:symbol` | none | single quote — **the bid is nested under `.quote.bid`** |
+| POST | `/webhook/finnhub` | `x-finnhub-secret` | broadcast to all clients |
+| GET | `/admin/providers` | `x-admin-token` | list providers |
+| POST | `/admin/providers/:provider` | `x-admin-token` | set API key / enable |
+| GET | `/admin/settings` | ⚠ none | active provider — see below |
+| POST | `/admin/settings` | `x-admin-token` | legacy provider switch |
+
+```json
+// GET /quote/:symbol
+{ "success": true,
+  "quote": { "symbol": "XAUUSD", "bid": 0, "ask": 0, "mid": 0, "last": 0, "time": 0 },
+  "provider": "twelvedata" }
+```
+
+## Providers
+
+| Provider | Transport | State |
+| --- | --- | --- |
+| `twelvedata` | WebSocket + REST polling (2 s) | Full support. Maps `XAUUSD → XAU/USD` etc. Synthesizes a 5 bps spread around REST `close` |
+| `finnhub` | WebSocket trade ticks | ⚠ emits `{symbol, last, ts}` only — **no `bid`/`ask`**, and `getQuote()` always returns `null` |
+| `binance` | — | Stub. Excluded from `SUPPORTED_RUNTIME_PROVIDERS`; configurable but never activated |
+
+### ⚠ Finnhub is the seeded default and produces no usable prices
+
+The frontend drops any tick without a `bid`, and `/quote/:symbol` returns 404 while Finnhub is
+active. Enable `twelvedata` for working prices. Detail:
+[docs/MARKET_DATA_ARCHITECTURE.md](../docs/MARKET_DATA_ARCHITECTURE.md) §3.
+
+## Provider selection and failover
+
+One provider is enabled at a time. `refreshProviderChain()` builds an ordered candidate list from
+`ws_api_keys` (preferred first, then a static order, then `updated_at`); an adapter failure calls
+`activateNextProvider()`, which swaps the provider and **replays every live subscription** — client
+sockets are not disturbed.
+
+Enabling a provider through the admin API disables the others in the same transaction and hot-swaps
+the runtime provider with no restart.
+
+## Adding a provider
+
+One new adapter file plus registration in `src/server.js` and `src/db.js`. Nothing outside this
+service should change. Step-by-step, with the contract an adapter must satisfy:
+[docs/MARKET_DATA_ARCHITECTURE.md](../docs/MARKET_DATA_ARCHITECTURE.md) §8.
+
+## Layout
+
+```
+src/
+├── server.js               HTTP + WebSocket, provider selection, failover, fan-out
+├── config.js               env parsing (⚠ hard-coded DB fallbacks)
+├── db.js                   ws_api_keys table, seed, failover-chain query
+└── providers/
+    ├── twelvedata.js       adapter: REST + WS, symbol mapping, spread synthesis
+    ├── twelvedata-ws.js    raw TwelveData WebSocket client (10 s heartbeat)
+    ├── finnhub.js          adapter + raw Finnhub stream
+    └── binance.js          stub
+sql/seed_ws_api_keys.sql    standalone DDL + seed for a fresh database
+```
+
+## Operations
 
 ```bash
 pm2 restart fxincap-ws
+pm2 logs fxincap-ws --lines 50
+curl http://127.0.0.1:4040/health     # provider_status should be "ready"
 ```
 
-### 3. Check Health
-
-```bash
-curl http://localhost:6000/health
-```
-
-Response:
-```json
-{
-  "status": "ok",
-  "provider": "twelvedata",
-  "ws_clients": 5,
-  "uptime_seconds": 123
-}
-```
-
----
-
-## Admin API Reference
-
-### Get All Providers
-
-**GET** `/admin/providers`
-
-Headers:
-- `X-Admin-Token: changeme-admin-token`
-
-Response:
-```json
-{
-  "success": true,
-  "providers": [
-    {
-      "id": 1,
-      "provider": "finnhub",
-      "enabled": 0,
-      "endpoint": "wss://ws.finnhub.io",
-      "api_key": "REPLACE_WITH_YOUR_FINNHUB_API_KEY",
-      "notes": "Finnhub WebSocket for stocks"
-    },
-    {
-      "id": 2,
-      "provider": "twelvedata",
-      "enabled": 1,
-      "endpoint": "wss://ws.twelvedata.com/v1/quotes/price",
-      "api_key": "40298686d2194b2087b87482f786e6b8",
-      "notes": "TwelveData WebSocket for forex/metals"
-    },
-    {
-      "id": 3,
-      "provider": "binance",
-      "enabled": 0,
-      "endpoint": "wss://stream.binance.com:9443/ws",
-      "api_key": "",
-      "notes": "Binance WebSocket for crypto"
-    }
-  ]
-}
-```
-
-### Update Provider Settings
-
-**POST** `/admin/providers/:provider`
-
-Headers:
-- `X-Admin-Token: changeme-admin-token`
-- `Content-Type: application/json`
-
-Body:
-```json
-{
-  "api_key": "your-api-key-here",
-  "enabled": true
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "provider": {
-    "id": 2,
-    "provider": "twelvedata",
-    "enabled": 1,
-    "api_key": "40298686d2194b2087b87482f786e6b8",
-    "endpoint": "wss://ws.twelvedata.com/v1/quotes/price"
-  }
-}
-```
-
-**Example:**
-
-```bash
-# Enable TwelveData provider
-curl -X POST http://localhost:6000/admin/providers/twelvedata \
-  -H "X-Admin-Token: changeme-admin-token" \
-  -H "Content-Type: application/json" \
-  -d '{"api_key":"40298686d2194b2087b87482f786e6b8","enabled":true}'
-
-# Disable Finnhub provider
-curl -X POST http://localhost:6000/admin/providers/finnhub \
-  -H "X-Admin-Token: changeme-admin-token" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":false}'
-```
-
----
-
-## Provider Configuration
-
-### TwelveData (Recommended for Forex/Metals)
-
-**Supported Symbols:** XAUUSD, XAGUSD, EUR/USD, stocks, indices
-
-**Free Plan Limitations:**
-- REST API: ✅ 8 credits/minute (1 credit per quote)
-- WebSocket: ⚠️ Limited to trial symbols only
-
-**API Key:** Sign up at https://twelvedata.com
-
-**Configuration:**
-```bash
-curl -X POST http://localhost:6000/admin/providers/twelvedata \
-  -H "X-Admin-Token: changeme-admin-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "api_key": "40298686d2194b2087b87482f786e6b8",
-    "enabled": true
-  }'
-```
-
-The provider automatically:
-1. Attempts WebSocket connection first
-2. Falls back to REST polling (2-second interval) if WS fails
-3. Handles rate limiting gracefully
-
-### Finnhub (Stocks Only)
-
-**Supported Symbols:** AAPL, TSLA, MSFT, etc. (US equities)
-
-**Limitations:**
-- ❌ No forex or metals support (requires OANDA subscription)
-- ✅ Free WebSocket streaming for stocks
-
-**API Key:** Get free key at https://finnhub.io
-
-### Binance (Crypto)
-
-**Supported Symbols:** BTCUSDT, ETHUSDT, etc.
-
-**Note:** No API key required for public WebSocket streams
-
----
-
-## Client WebSocket Usage
-
-### Connect
-
-```javascript
-const ws = new WebSocket('wss://ws.fxincap.com/stream');
-
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log(data);
-};
-```
-
-### Subscribe to Symbol
-
-```javascript
-ws.send(JSON.stringify({
-  action: 'subscribe',
-  symbol: 'XAUUSD'
-}));
-```
-
-### Receive Updates
-
-**Initial Quote:**
-```json
-{
-  "type": "quote",
-  "symbol": "XAUUSD",
-  "bid": 4530.42384,
-  "ask": 4534.95654,
-  "mid": 4532.69019,
-  "last": 4532.69019,
-  "time": 1735300000
-}
-```
-
-**Real-time Updates:**
-```json
-{
-  "type": "last",
-  "symbol": "XAUUSD",
-  "last": 4533.12,
-  "bid": 4531.0,
-  "ask": 4535.24,
-  "ts": 1735300123456
-}
-```
-
-### Unsubscribe
-
-```javascript
-ws.send(JSON.stringify({
-  action: 'unsubscribe',
-  symbol: 'XAUUSD'
-}));
-```
-
----
-
-## Troubleshooting
-
-### Provider Not Switching
-
-1. Check database settings:
-```bash
-curl -s http://localhost:6000/admin/providers \
-  -H "X-Admin-Token: changeme-admin-token" | jq .
-```
-
-2. Ensure only ONE provider is enabled:
-```bash
-# Disable all first
-for provider in finnhub twelvedata binance; do
-  curl -X POST http://localhost:6000/admin/providers/$provider \
-    -H "X-Admin-Token: changeme-admin-token" \
-    -H "Content-Type: application/json" \
-    -d '{"enabled":false}'
-done
-
-# Enable desired provider
-curl -X POST http://localhost:6000/admin/providers/twelvedata \
-  -H "X-Admin-Token: changeme-admin-token" \
-  -H "Content-Type: application/json" \
-  -d '{"api_key":"YOUR_API_KEY","enabled":true}'
-```
-
-3. Restart service:
-```bash
-pm2 restart fxincap-ws
-```
-
-### Rate Limiting (TwelveData Free Plan)
-
-**Error:** `You have run out of API credits for the current minute`
-
-**Solution:**
-- Free plan: 8 credits/minute (1 credit per quote)
-- Limit concurrent symbol subscriptions to ~4 symbols
-- Upgrade to Grow plan ($79/month) for higher limits
-
-### WebSocket 401 Unauthorized
-
-**Common with:** TwelveData free plan
-
-**Reason:** Free plan WebSocket limited to trial symbols only
-
-**Solution:** Provider automatically falls back to REST polling (no action needed)
-
----
-
-## Environment Variables
-
-Set in `ecosystem.config.cjs`:
-
-```javascript
-env: {
-  WS_PORT: 6000,
-  ADMIN_TOKEN: "changeme-admin-token",
-  DB_HOST: "your-db-host",
-  DB_PORT: 25060,
-  DB_USER: "suimfx1",
-  DB_PASS: "your-db-password",
-  DB_NAME: "suim_fx",
-  DB_SSL: "REQUIRED",
-  FINNHUB_API_KEY: "REPLACE_WITH_YOUR_FINNHUB_API_KEY" // fallback only
-}
-```
-
----
-
-## Provider Priorities
-
-The service loads the **first enabled provider** from:
-1. Binance (alphabetically first)
-2. Finnhub
-3. TwelveData
-
-**Best Practice:** Enable only ONE provider at a time to avoid conflicts.
-
-**Recommended Setup:**
-- **Metals (XAUUSD, XAGUSD):** TwelveData
-- **Stocks (AAPL, TSLA):** Finnhub or TwelveData
-- **Crypto (BTCUSDT):** Binance
-
----
-
-## Production Checklist
-
-- [ ] Change `ADMIN_TOKEN` from default value
-- [ ] Enable desired provider via admin API
-- [ ] Set valid API key for provider
-- [ ] Test quote endpoint: `curl http://localhost:6000/quote/XAUUSD`
-- [ ] Monitor logs: `pm2 logs fxincap-ws`
-- [ ] Verify WebSocket health: Check for 401/rate limit errors
-- [ ] Set up SSL certificate for `wss://` (production)
-
----
-
-## License
-
-Proprietary - FXIncap Platform
+| `provider_status` | Meaning |
+| --- | --- |
+| `initializing` | booting, no provider loaded yet |
+| `loading` | activating a candidate |
+| `ready` | connected — check `provider_loaded_at` |
+| `error` | see `provider_error`; `"apiKey is required"` means no key in `ws_api_keys` |
+
+Note that the top-level `status` field is the literal string `"ok"` and is not a computed verdict —
+monitor `provider_status` instead.

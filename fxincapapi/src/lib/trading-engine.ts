@@ -1,4 +1,6 @@
 import { query } from "./database.js";
+import { WS_QUOTE_BASE_URL } from "./env.js";
+import { getServerQuote, isFresh, executablePrice } from "./market-price.js";
 
 export interface Trade {
   id: number;
@@ -48,14 +50,28 @@ function getTradeNotional(symbol: string, volume: number, price: number): number
   return getContractSize(symbol) * volume * price;
 }
 
+/**
+ * Required margin, or `null` when the inputs are not a valid trade.
+ *
+ * This previously returned `0` for malformed input, which silently produced a
+ * zero-margin (free) trade instead of a rejection. Callers must treat `null` as
+ * "reject the operation".
+ */
 export function getRequiredMargin(
   symbol: string,
   volume: number,
   entryPrice: number,
   leverage: number
-): number {
-  if (!Number.isFinite(volume) || !Number.isFinite(entryPrice) || !Number.isFinite(leverage) || volume <= 0 || entryPrice <= 0 || leverage <= 0) {
-    return 0;
+): number | null {
+  if (
+    !Number.isFinite(volume) ||
+    !Number.isFinite(entryPrice) ||
+    !Number.isFinite(leverage) ||
+    volume <= 0 ||
+    entryPrice <= 0 ||
+    leverage <= 0
+  ) {
+    return null;
   }
 
   return Number((getTradeNotional(symbol, volume, entryPrice) / leverage).toFixed(2));
@@ -143,6 +159,10 @@ export async function validateTradeOpen(
     const availableBalance = balanceResult.availableBalance || 0;
     const requiredBalance = getRequiredMargin(symbol, volume, entryPrice, leverage);
 
+    if (requiredBalance == null) {
+      return { valid: false, error: "Invalid volume, price or leverage for margin calculation" };
+    }
+
     if (availableBalance < requiredBalance) {
       return {
         valid: false,
@@ -176,6 +196,10 @@ export async function createTrade(
     await conn.query("BEGIN");
 
     const lockedBalance = getRequiredMargin(symbol, volume, entryPrice, leverage);
+    if (lockedBalance == null) {
+      await conn.query("ROLLBACK");
+      return { success: false, error: "Invalid volume, price or leverage for margin calculation" };
+    }
 
     const accountId = await resolveActiveAccountId(userId, conn);
     if (!accountId) {
@@ -500,17 +524,21 @@ export async function checkAndExecuteStopLossTakeProfit(
 
 /** Base URL for fxincapws HTTP quotes (`GET /quote/:symbol`), default port 4040. */
 export function getWsQuoteBaseUrl(): string {
-  const raw = process.env.WS_QUOTE_BASE_URL || "http://127.0.0.1:4040";
-  return raw.replace(/\/$/, "");
+  return WS_QUOTE_BASE_URL;
 }
 
 /**
  * Poll live quotes and close any open trades whose SL/TP is touched.
  * Run on an interval from the API process (requires fxincapws reachable at WS_QUOTE_BASE_URL).
+ *
+ * Prices come from getServerQuote(), which reads the fxincapws envelope
+ * correctly. The previous implementation read `data.bid` from a payload shaped
+ * `{ success, quote: { bid, ask }, provider }`, so every symbol produced NaN and
+ * was skipped — server-side SL/TP never executed.
  */
 export async function processAllStopLossTakeProfit(): Promise<{ checked: number; closed: number }> {
   const rows = await query(
-    `SELECT id, symbol FROM trades 
+    `SELECT id, symbol FROM trades
      WHERE status = 'OPEN' AND (stop_loss IS NOT NULL OR take_profit IS NOT NULL)`
   );
   const list = Array.isArray(rows) ? rows : [];
@@ -528,28 +556,17 @@ export async function processAllStopLossTakeProfit(): Promise<{ checked: number;
     bySymbol.get(sym)!.push(id);
   }
 
-  const base = getWsQuoteBaseUrl();
   let checked = 0;
   let closed = 0;
 
   for (const [symbol, tradeIds] of bySymbol) {
-    let bid = 0;
-    let ask = 0;
-    try {
-      const res = await fetch(`${base}/quote/${encodeURIComponent(symbol)}`);
-      if (!res.ok) continue;
-      const data = (await res.json()) as { bid?: unknown; ask?: unknown };
-      bid = Number(data.bid);
-      ask = Number(data.ask ?? data.bid);
-      if (!Number.isFinite(bid) || bid <= 0) continue;
-      if (!Number.isFinite(ask) || ask <= 0) ask = bid;
-    } catch {
-      continue;
-    }
+    const quote = await getServerQuote(symbol);
+    // No fresh server price: skip. Never fabricate a level that closes a trade.
+    if (!quote || !isFresh(quote)) continue;
 
     for (const tradeId of tradeIds) {
       checked += 1;
-      const r = await checkAndExecuteStopLossTakeProfit(tradeId, bid, ask);
+      const r = await checkAndExecuteStopLossTakeProfit(tradeId, quote.bid, quote.ask);
       if (r.executed) closed += 1;
     }
   }
@@ -563,7 +580,7 @@ export async function autoCloseExpiredTrades(timeoutMinutes: number): Promise<nu
     const timeoutSeconds = Math.floor(safeTimeout * 60);
 
     const rows = await query(
-      `SELECT id, current_price, entry_price
+      `SELECT id, symbol, side, current_price, entry_price
        FROM trades
        WHERE status = 'OPEN'
          AND EXTRACT(EPOCH FROM (NOW() - opened_at)) >= $1`,
@@ -578,8 +595,24 @@ export async function autoCloseExpiredTrades(timeoutMinutes: number): Promise<nu
     let closedCount = 0;
 
     for (const trade of expiredTrades as any[]) {
-      const closePrice = Number(trade.current_price ?? trade.entry_price);
-      if (!Number.isFinite(closePrice) || closePrice <= 0) {
+      // Settle at the live server price. Previously this fell back to
+      // `entry_price` when `current_price` was NULL, closing the position for
+      // exactly zero P&L — a fabricated settlement, not a market one.
+      const quote = await getServerQuote(String(trade.symbol || ""));
+      let closePrice: number | null = null;
+
+      if (quote && isFresh(quote)) {
+        closePrice = executablePrice(quote, String(trade.side || ""), "CLOSE");
+      } else {
+        // Fall back only to a server-maintained current_price, never to entry_price.
+        const stored = Number(trade.current_price);
+        if (Number.isFinite(stored) && stored > 0) closePrice = stored;
+      }
+
+      if (closePrice == null || !Number.isFinite(closePrice) || closePrice <= 0) {
+        console.warn(
+          `[TRADE] Auto-close skipped for trade ${trade.id} (${trade.symbol}): no server price available`
+        );
         continue;
       }
 
