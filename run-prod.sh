@@ -30,9 +30,9 @@ if [ -z "${DEPLOY_WEBHOOK_SECRET:-}" ]; then
   exit 1
 fi
 if pm2 describe fxincap-deploy-webhook >/dev/null 2>&1; then
-  NODE_ENV=production DEPLOY_PORT=9010 DEPLOY_PATH=/hooks/deploy DEPLOY_BRANCH="${DEPLOY_BRANCH:-dev}" DEPLOY_SCRIPT="${BASE_DIR}/deploy-prod.sh" DEPLOY_WEBHOOK_SECRET="${DEPLOY_WEBHOOK_SECRET:-}" pm2 restart fxincap-deploy-webhook --update-env
+  NODE_ENV=production DEPLOY_PORT=9010 DEPLOY_PATH=/hooks/deploy DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}" DEPLOY_SCRIPT="${BASE_DIR}/deploy-prod.sh" DEPLOY_WEBHOOK_SECRET="${DEPLOY_WEBHOOK_SECRET:-}" pm2 restart fxincap-deploy-webhook --update-env
 else
-  NODE_ENV=production DEPLOY_PORT=9010 DEPLOY_PATH=/hooks/deploy DEPLOY_BRANCH="${DEPLOY_BRANCH:-dev}" DEPLOY_SCRIPT="${BASE_DIR}/deploy-prod.sh" DEPLOY_WEBHOOK_SECRET="${DEPLOY_WEBHOOK_SECRET:-}" pm2 start node --name fxincap-deploy-webhook --cwd "${BASE_DIR}" -- deploy/webhook-server.cjs
+  NODE_ENV=production DEPLOY_PORT=9010 DEPLOY_PATH=/hooks/deploy DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}" DEPLOY_SCRIPT="${BASE_DIR}/deploy-prod.sh" DEPLOY_WEBHOOK_SECRET="${DEPLOY_WEBHOOK_SECRET:-}" pm2 start node --name fxincap-deploy-webhook --cwd "${BASE_DIR}" -- deploy/webhook-server.cjs
 fi
 
 pm2 save

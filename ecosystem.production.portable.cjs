@@ -106,7 +106,7 @@ module.exports = {
         NODE_ENV: "production",
         DEPLOY_PORT: 9010,
         DEPLOY_PATH: "/hooks/deploy",
-        DEPLOY_BRANCH: "dev",
+        DEPLOY_BRANCH: "main",
         DEPLOY_SCRIPT: path.join(baseDir, "deploy-prod.sh"),
       },
       error_file: path.join(logsDir, "deploy-webhook-error.log"),

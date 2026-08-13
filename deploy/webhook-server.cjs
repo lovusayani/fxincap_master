@@ -13,7 +13,7 @@ const routePath = process.env.DEPLOY_PATH || "/hooks/deploy";
 const repoBaseDir = process.cwd();
 const deployScript = process.env.DEPLOY_SCRIPT || path.join(repoBaseDir, "deploy-prod.sh");
 const webhookSecret = process.env.DEPLOY_WEBHOOK_SECRET || "";
-const deployBranch = process.env.DEPLOY_BRANCH || "dev";
+const deployBranch = process.env.DEPLOY_BRANCH || "main";
 
 let isDeployRunning = false;
 

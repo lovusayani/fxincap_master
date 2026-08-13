@@ -11,7 +11,7 @@ if [ -f "${DEPLOY_ENV_FILE}" ]; then
   set +a
 fi
 
-BRANCH="${DEPLOY_BRANCH:-dev}"
+BRANCH="${DEPLOY_BRANCH:-main}"
 
 echo "[deploy] repo: ${BASE_DIR}"
 echo "[deploy] branch: ${BRANCH}"
