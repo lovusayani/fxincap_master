@@ -1,10 +1,14 @@
 import { Router, Response, Request } from "express";
+import bcryptjs from "bcryptjs";
+import jwt from "jsonwebtoken";
 import { AuthRequest, verifyToken } from "./auth.js";
 import { fetchUserById, fetchUsers, countUsers, deleteUserIfEligible } from "../services/adminUsers.js";
 import { fetchFundRequests, updateFundRequestStatus, fetchFundRequestById, completeDepositAndCredit, completeWithdrawalAndDebit, rejectWithdrawalAndCredit } from "../services/adminFunds.js";
 import { fetchKycDocuments, fetchKycDocumentById, updateKycStatus } from "../services/adminKyc.js";
 import { getAutoCloseTimeoutMinutes, setAutoCloseTimeoutMinutes } from "../lib/trade-settings.js";
+import { ensureAccountTypesTable } from "../lib/account-types.js";
 import { getConnection, query } from "../lib/database.js";
+import { JWT_SECRET } from "../lib/env.js";
 import { v4 as uuidv4 } from "uuid";
 import multer from "multer";
 import fs from "fs";
@@ -470,7 +474,119 @@ router.put("/wallet-report/:userId/balance", verifyToken, async (req: AuthReques
   }
 });
 
-// Get all positions
+// ==========================================
+// All trades for admin (from `trades` table)
+// ==========================================
+router.get("/trades", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const statusFilter = String(req.query.status || "").toUpperCase(); // OPEN | CLOSED | CANCELLED | ""
+    const search = String(req.query.search || "");
+    const from = req.query.from as string;
+    const to = req.query.to as string;
+    const page = Math.max(1, parseInt(String(req.query.page || "1")));
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "50"))));
+    const offset = (page - 1) * limit;
+
+    const conditions: string[] = [];
+    const params: any[] = [];
+    let idx = 1;
+
+    if (statusFilter) {
+      if (statusFilter === "OPEN") {
+        conditions.push(`t.status = $${idx++}`);
+        params.push("OPEN");
+      } else if (statusFilter === "CLOSED") {
+        conditions.push(`t.status IN ('CLOSED', 'CANCELLED')`);
+      }
+    }
+
+    if (search) {
+      conditions.push(`(t.symbol ILIKE $${idx} OR u.email ILIKE $${idx} OR u.first_name ILIKE $${idx} OR u.last_name ILIKE $${idx})`);
+      params.push(`%${search}%`);
+      idx++;
+    }
+
+    if (from) {
+      conditions.push(`t.opened_at >= $${idx++}`);
+      params.push(from);
+    }
+    if (to) {
+      conditions.push(`t.opened_at <= $${idx++}`);
+      params.push(to + " 23:59:59");
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const rows = await query(`
+      SELECT t.id, t.symbol, t.side, t.volume, t.entry_price, t.current_price,
+             t.close_price, t.final_pnl, t.pnl, t.pnl_percentage,
+             t.leverage, t.status, t.opened_at, t.closed_at, t.closing_reason,
+             t.stop_loss, t.take_profit,
+             u.email, u.first_name, u.last_name
+      FROM trades t
+      JOIN users u ON u.id = t.user_id
+      ${where}
+      ORDER BY t.opened_at DESC
+      LIMIT $${idx++} OFFSET $${idx++}
+    `, [...params, limit, offset]) as any[];
+
+    const countRows = await query(`
+      SELECT COUNT(*) as total FROM trades t
+      JOIN users u ON u.id = t.user_id
+      ${where}
+    `, params) as any[];
+
+    const total = Number(countRows?.[0]?.total || 0);
+
+    // Stats (all matching, not paginated)
+    const statsRows = await query(`
+      SELECT
+        COUNT(*) as total_trades,
+        COUNT(*) FILTER (WHERE t.status = 'OPEN') as open_trades,
+        COUNT(*) FILTER (WHERE t.status IN ('CLOSED','CANCELLED')) as closed_trades,
+        COALESCE(SUM(CASE WHEN t.status IN ('CLOSED','CANCELLED') THEN t.final_pnl ELSE t.pnl END), 0) as total_profit
+      FROM trades t
+      JOIN users u ON u.id = t.user_id
+      ${where}
+    `, params) as any[];
+
+    const s = statsRows?.[0] || {};
+
+    res.json({
+      success: true,
+      data: (Array.isArray(rows) ? rows : []).map((t: any) => ({
+        id: t.id,
+        symbol: t.symbol,
+        side: t.side,
+        volume: Number(t.volume),
+        openPrice: Number(t.entry_price),
+        currentPrice: Number(t.current_price || t.entry_price),
+        closePrice: t.close_price ? Number(t.close_price) : null,
+        stopLoss: t.stop_loss ? Number(t.stop_loss) : null,
+        takeProfit: t.take_profit ? Number(t.take_profit) : null,
+        profit: Number(t.status === "OPEN" ? (t.pnl || 0) : (t.final_pnl || 0)),
+        leverage: Number(t.leverage || 1),
+        status: String(t.status || "").toLowerCase(),
+        openTime: t.opened_at,
+        closeTime: t.closed_at,
+        closingReason: t.closing_reason,
+        traderEmail: t.email,
+        traderName: `${t.first_name || ""} ${t.last_name || ""}`.trim(),
+      })),
+      total,
+      stats: {
+        totalTrades: Number(s.total_trades || 0),
+        openPositions: Number(s.open_trades || 0),
+        closedTrades: Number(s.closed_trades || 0),
+        totalProfit: Number(s.total_profit || 0),
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get all positions (legacy stub kept for backward compat)
 router.get("/positions", verifyToken, async (req: AuthRequest, res: Response) => {
   res.json([]);
 });
@@ -524,6 +640,44 @@ const ensureStyleSettingsTable = async () => {
       glossy_effect VARCHAR(16) DEFAULT 'on'
     )
   `);
+};
+
+// Generic key-value config table — app user always owns this (created fresh).
+// Avoids ALTER TABLE on style_settings which may be owned by a different DB user.
+const ensurePlatformConfigTable = async () => {
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS platform_config (
+        key   VARCHAR(64) PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT ''
+      )
+    `);
+  } catch {
+    // Best effort — degrade gracefully if permissions are restricted.
+  }
+};
+
+const getStoredPlatformName = async (): Promise<string> => {
+  try {
+    await ensurePlatformConfigTable();
+    const rows = await query(`SELECT value FROM platform_config WHERE key = 'platform_name'`);
+    return Array.isArray(rows) && rows.length > 0 ? (rows as any[])[0].value || "SuimFx" : "SuimFx";
+  } catch {
+    return "SuimFx";
+  }
+};
+
+const saveStoredPlatformName = async (name: string): Promise<void> => {
+  try {
+    await ensurePlatformConfigTable();
+    await query(
+      `INSERT INTO platform_config (key, value) VALUES ('platform_name', $1)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [name]
+    );
+  } catch {
+    // Non-fatal — other settings still save normally.
+  }
 };
 
 const getStoredShadcnTheme = async () => {
@@ -680,7 +834,10 @@ router.get("/style-settings", async (req: Request, res: Response) => {
   try {
     await ensureStyleSettingsTable();
 
-    const shadcnTheme = await getStoredShadcnTheme();
+    const [shadcnTheme, platformName] = await Promise.all([
+      getStoredShadcnTheme(),
+      getStoredPlatformName(),
+    ]);
     const storedLogos = getStoredLogoSettings();
     const settings = await query(`
       SELECT
@@ -695,10 +852,10 @@ router.get("/style-settings", async (req: Request, res: Response) => {
       FROM style_settings
       LIMIT 1
     `);
-    
+
     if (!settings || (settings as any[]).length === 0) {
-      return res.json({ 
-        success: true, 
+      return res.json({
+        success: true,
         data: {
           topbarBgColor: "default",
           themeMode: "default",
@@ -707,13 +864,14 @@ router.get("/style-settings", async (req: Request, res: Response) => {
           fontColorMode: "auto",
           glossyEffect: "on",
           buttonTextColor: "white",
+          platformName,
           logoLightUrl: toPublicLogoUrl(req, storedLogos.light),
           logoDarkUrl: toPublicLogoUrl(req, storedLogos.dark),
           logoSquareUrl: toPublicLogoUrl(req, storedLogos.square),
         }
       });
     }
-    
+
     const data = (settings as any[])[0];
     res.json({
       success: true,
@@ -726,6 +884,7 @@ router.get("/style-settings", async (req: Request, res: Response) => {
         fontColorMode: data.font_color_mode || "auto",
         glossyEffect: data.glossy_effect || "on",
         buttonTextColor: data.button_text_color || "white",
+        platformName,
         logoLightUrl: toPublicLogoUrl(req, storedLogos.light),
         logoDarkUrl: toPublicLogoUrl(req, storedLogos.dark),
         logoSquareUrl: toPublicLogoUrl(req, storedLogos.square),
@@ -736,7 +895,7 @@ router.get("/style-settings", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/style-settings", verifyToken, async (req: AuthRequest, res: Response) => {
+router.post("/style-settings", async (req: Request, res: Response) => {
   try {
     const {
       topbarBgColor,
@@ -747,8 +906,10 @@ router.post("/style-settings", verifyToken, async (req: AuthRequest, res: Respon
       buttonTextColor,
       fontColorMode,
       glossyEffect,
+      platformName,
     } = req.body;
     await ensureStyleSettingsTable();
+    const nextPlatformName = String(platformName || "SuimFx").trim().slice(0, 128) || "SuimFx";
     const incomingTopbar = String(topbarBgColor || headerColor || "");
     const nextTopbarBgColor = ["default", "red", "blue", "green", "purple", "dark", "light"].includes(incomingTopbar)
       ? incomingTopbar
@@ -785,10 +946,13 @@ router.post("/style-settings", verifyToken, async (req: AuthRequest, res: Respon
         [nextTopbarBgColor, nextTopbarBgColor, nextThemeMode, nextFontSize, nextButtonTextColor, nextFontColorMode, nextGlossyEffect]
       );
     }
-    await saveStoredShadcnTheme(nextShadcnTheme);
-    
-    res.json({ 
-      success: true, 
+    await Promise.all([
+      saveStoredShadcnTheme(nextShadcnTheme),
+      saveStoredPlatformName(nextPlatformName),
+    ]);
+
+    res.json({
+      success: true,
       data: {
         topbarBgColor: nextTopbarBgColor,
         headerColor: nextTopbarBgColor,
@@ -798,8 +962,9 @@ router.post("/style-settings", verifyToken, async (req: AuthRequest, res: Respon
         fontColorMode: nextFontColorMode,
         glossyEffect: nextGlossyEffect,
         buttonTextColor: nextButtonTextColor,
+        platformName: nextPlatformName,
       },
-      message: "Settings saved successfully" 
+      message: "Settings saved successfully"
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
@@ -1198,6 +1363,910 @@ router.post("/server-settings/reset-all-users", verifyToken, async (req: AuthReq
     return res.status(500).json({ success: false, error: error.message || "Failed to reset all users" });
   } finally {
     connection.release();
+  }
+});
+
+// ==========================================
+// Trader stats — counts by status
+// ==========================================
+router.get("/traders/stats", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const rows = await query(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'active'    THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN status = 'banned'    THEN 1 ELSE 0 END) AS banned,
+        SUM(CASE WHEN status NOT IN ('active','banned') OR status IS NULL THEN 1 ELSE 0 END) AS inactive
+      FROM users
+    `) as any[];
+    const r = Array.isArray(rows) && rows[0] ? rows[0] : {}
+    res.json({
+      success: true,
+      data: {
+        total:    Number(r.total    || 0),
+        active:   Number(r.active   || 0),
+        banned:   Number(r.banned   || 0),
+        inactive: Number(r.inactive || 0),
+      },
+    })
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// ==========================================
+// Traders — users with account balance
+// ==========================================
+router.get("/traders", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const page = Number(req.query.page) || 1;
+    const offset = (page - 1) * limit;
+    const search = (req.query.search as string) || "";
+    const status = (req.query.status as string) || "";
+    const sortBy = (req.query.sortBy as string) || "created_at";
+    const sortDir = (req.query.sortDir as string) === "asc" ? "ASC" : "DESC";
+
+    const allowedSort: Record<string, string> = {
+      name: "u.first_name",
+      email: "u.email",
+      status: "u.status",
+      createdAt: "u.created_at",
+      realBalance: "real_balance",
+    };
+    const orderCol = allowedSort[sortBy] || "u.created_at";
+
+    const whereParts: string[] = [];
+    const values: any[] = [];
+    if (search) {
+      const like = `%${search}%`;
+      whereParts.push("(u.email LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ? OR u.phone LIKE ?)");
+      values.push(like, like, like, like);
+    }
+    if (status) {
+      whereParts.push("u.status = ?");
+      values.push(status);
+    }
+    const where = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+
+    const rows = await query(`
+      SELECT u.id, u.email, u.first_name, u.last_name, u.phone, u.status, u.created_at,
+             COALESCE(SUM(CASE WHEN ua.trading_mode = 'real' THEN ua.balance ELSE 0 END), 0) AS real_balance,
+             COALESCE(SUM(CASE WHEN ua.trading_mode = 'demo' THEN ua.balance ELSE 0 END), 0) AS demo_balance
+      FROM users u
+      LEFT JOIN user_accounts ua ON ua.user_id = u.id
+      ${where}
+      GROUP BY u.id, u.email, u.first_name, u.last_name, u.phone, u.status, u.created_at
+      ORDER BY ${orderCol} ${sortDir}
+      LIMIT ${limit} OFFSET ${offset}
+    `, values) as any[];
+
+    const countRows = await query(`SELECT COUNT(*) AS total FROM users u ${where}`, values) as any[];
+    const total = Number(countRows?.[0]?.total || 0);
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      email: row.email,
+      firstName: row.first_name || "",
+      lastName: row.last_name || "",
+      phone: row.phone || null,
+      status: row.status || null,
+      realBalance: Number(row.real_balance || 0),
+      demoBalance: Number(row.demo_balance || 0),
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+    }));
+
+    res.json({ success: true, data, total, page, limit });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/traders/:userId/ban", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await query("UPDATE users SET status = 'banned' WHERE id = ?", [req.params.userId]);
+    res.json({ success: true, message: "Trader banned" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/traders/:userId/unban", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await query("UPDATE users SET status = 'active' WHERE id = ?", [req.params.userId]);
+    res.json({ success: true, message: "Trader unbanned" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/traders/:userId/change-password", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const newPassword = String(req.body?.newPassword || "").trim();
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ success: false, error: "Password must be at least 6 characters" });
+    }
+    const hashed = await bcryptjs.hash(newPassword, 10);
+    await query("UPDATE users SET password_hash = ? WHERE id = ?", [hashed, req.params.userId]);
+    res.json({ success: true, message: "Password changed" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/traders/:userId/deduct-fund", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const amount = Number(req.body?.amount);
+    const mode = String(req.body?.mode || "demo");
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, error: "Amount must be greater than 0" });
+    }
+    const accounts = await query(
+      "SELECT id, balance FROM user_accounts WHERE user_id = ? AND trading_mode = ? LIMIT 1",
+      [req.params.userId, mode]
+    ) as any[];
+    if (!Array.isArray(accounts) || accounts.length === 0) {
+      return res.status(404).json({ success: false, error: "Account not found" });
+    }
+    const account = accounts[0];
+    if (Number(account.balance || 0) < amount) {
+      return res.status(400).json({ success: false, error: "Insufficient balance" });
+    }
+    await query(
+      "UPDATE user_accounts SET balance = balance - ?, equity = equity - ?, available_balance = available_balance - ? WHERE id = ?",
+      [amount, amount, amount, account.id]
+    );
+    res.json({ success: true, message: `Deducted $${amount} from ${mode} account` });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// Trader — Trading Accounts
+// ==========================================
+router.get("/traders/:userId/trading-accounts", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { userId } = req.params;
+    const accounts = await query(
+      `SELECT id, account_number, trading_mode, balance, equity, margin_free, available_balance, currency, account_status, created_at
+       FROM user_accounts WHERE user_id = ? ORDER BY trading_mode ASC`,
+      [userId]
+    ) as any[];
+
+    const data = (Array.isArray(accounts) ? accounts : []).map((a: any) => ({
+      id: a.id,
+      accountNumber: a.account_number,
+      mode: a.trading_mode,
+      balance: Number(a.balance || 0),
+      equity: Number(a.equity || 0),
+      freeMargin: Number(a.margin_free || 0),
+      availableBalance: Number(a.available_balance || 0),
+      currency: a.currency || "USD",
+      status: a.account_status,
+      createdAt: a.created_at,
+    }));
+
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// Trader Accounts — flat, trader-wise view of every account across all
+// traders, with per-account admin actions (ban / activate / modify / delete).
+// ==========================================
+router.get("/trader-accounts", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const offset = (page - 1) * limit;
+    const search = (req.query.search as string) || "";
+    const mode = (req.query.mode as string) || "";
+    const status = (req.query.status as string) || "";
+
+    await ensureAccountTypesTable();
+
+    const whereParts: string[] = [];
+    const values: any[] = [];
+    if (search) {
+      const like = `%${search}%`;
+      whereParts.push("(u.email LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ? OR ua.account_number LIKE ?)");
+      values.push(like, like, like, like);
+    }
+    if (mode) {
+      whereParts.push("ua.trading_mode = ?");
+      values.push(mode);
+    }
+    if (status) {
+      whereParts.push("ua.account_status = ?");
+      values.push(status);
+    }
+    const where = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+
+    const rows = (await query(
+      `
+      SELECT ua.id, ua.user_id, ua.account_number, ua.trading_mode, ua.balance, ua.equity,
+             ua.margin_free, ua.available_balance, ua.currency, ua.leverage, ua.is_active,
+             ua.account_status, ua.account_type_id, ua.created_at,
+             u.email, u.first_name, u.last_name,
+             at.name AS account_type_name
+      FROM user_accounts ua
+      JOIN users u ON u.id = ua.user_id
+      LEFT JOIN account_types at ON at.id = ua.account_type_id
+      ${where}
+      ORDER BY ua.created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+      `,
+      values
+    )) as any[];
+
+    const countRows = (await query(
+      `SELECT COUNT(*) AS total FROM user_accounts ua JOIN users u ON u.id = ua.user_id ${where}`,
+      values
+    )) as any[];
+    const total = Number(countRows?.[0]?.total || 0);
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      userId: row.user_id,
+      traderName: `${row.first_name || ""} ${row.last_name || ""}`.trim() || "—",
+      traderEmail: row.email,
+      accountNumber: row.account_number,
+      tradingMode: row.trading_mode,
+      balance: Number(row.balance || 0),
+      equity: Number(row.equity || 0),
+      freeMargin: Number(row.margin_free || 0),
+      availableBalance: Number(row.available_balance || 0),
+      currency: row.currency || "USD",
+      leverage: Number(row.leverage || 500),
+      isActive: Boolean(row.is_active),
+      status: row.account_status || "active",
+      accountTypeId: row.account_type_id,
+      accountTypeName: row.account_type_name || "Standard",
+      createdAt: row.created_at,
+    }));
+
+    res.json({ success: true, data, total, page, limit });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/trader-accounts/:id/ban", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await query("UPDATE user_accounts SET account_status = 'banned' WHERE id = ?", [req.params.id]);
+    res.json({ success: true, message: "Account banned" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/trader-accounts/:id/activate", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await query("UPDATE user_accounts SET account_status = 'active' WHERE id = ?", [req.params.id]);
+    res.json({ success: true, message: "Account activated" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/trader-accounts/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { balance, equity, leverage, accountTypeId } = req.body || {};
+
+    const sets: string[] = [];
+    const values: any[] = [];
+
+    if (balance !== undefined) {
+      const n = Number(balance);
+      if (!Number.isFinite(n) || n < 0) return res.status(400).json({ success: false, error: "Invalid balance" });
+      sets.push("balance = ?");
+      values.push(n);
+      // available_balance and margin_free both represent "free" balance in
+      // different code paths (legacy split column) — keep both consistent
+      // with the new balance; margin locked by open trades is preserved.
+      sets.push("available_balance = GREATEST(0, ? - locked_balance)");
+      values.push(n);
+      sets.push("margin_free = GREATEST(0, ? - locked_balance)");
+      values.push(n);
+    }
+    if (equity !== undefined) {
+      const n = Number(equity);
+      if (!Number.isFinite(n) || n < 0) return res.status(400).json({ success: false, error: "Invalid equity" });
+      sets.push("equity = ?");
+      values.push(n);
+    }
+    if (leverage !== undefined) {
+      const n = Number(leverage);
+      if (!Number.isFinite(n) || n <= 0) return res.status(400).json({ success: false, error: "Invalid leverage" });
+      sets.push("leverage = ?");
+      values.push(n);
+    }
+    if (accountTypeId !== undefined) {
+      if (accountTypeId !== null) {
+        const typeRows = (await query("SELECT id FROM account_types WHERE id = ? LIMIT 1", [accountTypeId])) as any[];
+        if (!Array.isArray(typeRows) || typeRows.length === 0) {
+          return res.status(404).json({ success: false, error: "Account type not found" });
+        }
+      }
+      sets.push("account_type_id = ?");
+      values.push(accountTypeId);
+    }
+
+    if (sets.length === 0) {
+      return res.status(400).json({ success: false, error: "No fields to update" });
+    }
+
+    values.push(id);
+    const updated = await query(`UPDATE user_accounts SET ${sets.join(", ")} WHERE id = ?`, values);
+
+    res.json({ success: true, message: "Account updated" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete("/trader-accounts/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const acctRows = (await query(
+      "SELECT user_id, trading_mode, is_active FROM user_accounts WHERE id = ? LIMIT 1",
+      [id]
+    )) as any[];
+    if (!Array.isArray(acctRows) || acctRows.length === 0) {
+      return res.status(404).json({ success: false, error: "Account not found" });
+    }
+    const account = acctRows[0];
+
+    const openTradeRows = (await query(
+      "SELECT COUNT(*) AS open_count FROM trades WHERE account_id = ? AND status = 'OPEN'",
+      [id]
+    )) as any[];
+    const openCount = Number(openTradeRows?.[0]?.open_count || 0);
+    if (openCount > 0) {
+      return res.status(409).json({
+        success: false,
+        error: `Cannot delete: this account has ${openCount} open trade${openCount === 1 ? "" : "s"}. Close them first.`,
+      });
+    }
+
+    await query("DELETE FROM user_accounts WHERE id = ?", [id]);
+
+    // If the deleted account was the active one for its mode, promote the
+    // most recently created remaining account of that mode so the trader
+    // isn't left without a resolvable account.
+    if (account.is_active) {
+      const siblings = (await query(
+        "SELECT id FROM user_accounts WHERE user_id = ? AND trading_mode = ? ORDER BY created_at DESC LIMIT 1",
+        [account.user_id, account.trading_mode]
+      )) as any[];
+      if (Array.isArray(siblings) && siblings.length > 0) {
+        await query("UPDATE user_accounts SET is_active = true WHERE id = ?", [siblings[0].id]);
+      }
+    }
+
+    res.json({ success: true, message: "Account deleted" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// Trader — Login as User (impersonate)
+// ==========================================
+router.post("/traders/:userId/login-as", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { userId } = req.params;
+    const users = await query(
+      "SELECT id, email, first_name, last_name FROM users WHERE id = ? LIMIT 1",
+      [userId]
+    ) as any[];
+
+    if (!Array.isArray(users) || users.length === 0) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    const user = users[0];
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: "2h" }
+    );
+
+    res.json({ success: true, token, user: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// Sub Agents — admin_users list
+// ==========================================
+router.get("/sub-agents", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const page = Number(req.query.page) || 1;
+    const offset = (page - 1) * limit;
+    const search = (req.query.search as string) || "";
+
+    const whereParts: string[] = [];
+    const values: any[] = [];
+    if (search) {
+      const like = `%${search}%`;
+      whereParts.push("(email LIKE ? OR first_name LIKE ? OR last_name LIKE ?)");
+      values.push(like, like, like);
+    }
+    const where = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+
+    const rows = await query(`
+      SELECT id, email, first_name, last_name, status, email_verified, last_login_at, created_at
+      FROM admin_users ${where}
+      ORDER BY created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `, values) as any[];
+
+    const countRows = await query(`SELECT COUNT(*) AS total FROM admin_users ${where}`, values) as any[];
+    const total = Number(countRows?.[0]?.total || 0);
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      email: row.email,
+      firstName: row.first_name || "",
+      lastName: row.last_name || "",
+      status: row.status || null,
+      emailVerified: row.email_verified === true || row.email_verified === 1,
+      lastLoginAt: row.last_login_at ? new Date(row.last_login_at).toISOString() : null,
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+    }));
+
+    res.json({ success: true, data, total, page, limit });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// Account Types — CRUD operations
+// ==========================================
+router.get("/account-types", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureAccountTypesTable();
+
+    const rows = await query(`
+      SELECT id, name, description, min_deposit, leverage, exposure_limit, is_demo, created_at, updated_at
+      FROM account_types
+      ORDER BY created_at DESC
+    `) as any[];
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      minDeposit: Number(row.min_deposit || 0),
+      leverage: Number(row.leverage || 100),
+      exposureLimit: Number(row.exposure_limit || 0),
+      isDemo: Boolean(row.is_demo),
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+    }));
+
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/account-types", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureAccountTypesTable();
+
+    const { name, description, minDeposit, leverage, exposureLimit, isDemo } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, error: "Name is required" });
+    }
+
+    if (!leverage || Number(leverage) <= 0) {
+      return res.status(400).json({ success: false, error: "Valid leverage is required" });
+    }
+
+    const id = uuidv4();
+    await query(`
+      INSERT INTO account_types (id, name, description, min_deposit, leverage, exposure_limit, is_demo, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+    `, [id, name, description || "", minDeposit || 0, leverage, exposureLimit || 0, isDemo ? 1 : 0]);
+
+    res.status(201).json({
+      success: true,
+      message: "Account type created successfully",
+      data: { id, name, description, minDeposit, leverage, exposureLimit, isDemo }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/account-types/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureAccountTypesTable();
+
+    const { id } = req.params;
+    const { name, description, minDeposit, leverage, exposureLimit, isDemo } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, error: "Name is required" });
+    }
+
+    if (!leverage || Number(leverage) <= 0) {
+      return res.status(400).json({ success: false, error: "Valid leverage is required" });
+    }
+
+    await query(`
+      UPDATE account_types
+      SET name = ?, description = ?, min_deposit = ?, leverage = ?, exposure_limit = ?, is_demo = ?, updated_at = NOW()
+      WHERE id = ?
+    `, [name, description || "", minDeposit || 0, leverage, exposureLimit || 0, isDemo ? 1 : 0, id]);
+
+    res.json({
+      success: true,
+      message: "Account type updated successfully",
+      data: { id, name, description, minDeposit, leverage, exposureLimit, isDemo }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete("/account-types/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureAccountTypesTable();
+
+    const { id } = req.params;
+
+    await query(`DELETE FROM account_types WHERE id = ?`, [id]);
+
+    res.json({ success: true, message: "Account type deleted successfully" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// IB Program routes
+// ─────────────────────────────────────────────────────────────
+
+// Ensure IB tables exist
+async function ensureIBTables() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS ib_partners (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36) NOT NULL,
+      name VARCHAR(255),
+      email VARCHAR(255),
+      phone VARCHAR(50),
+      ib_code VARCHAR(50) UNIQUE,
+      level_id VARCHAR(36),
+      status VARCHAR(20) DEFAULT 'active',
+      commission_earned DECIMAL(18,2) DEFAULT 0,
+      commission_pending DECIMAL(18,2) DEFAULT 0,
+      referrals INT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS ib_applications (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36),
+      name VARCHAR(255),
+      email VARCHAR(255),
+      phone VARCHAR(50),
+      experience TEXT,
+      status VARCHAR(20) DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS ib_levels (
+      id VARCHAR(36) PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      commission_rate DECIMAL(5,2) NOT NULL,
+      min_referrals INT DEFAULT 0,
+      description TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS ib_settings (
+      id INT PRIMARY KEY DEFAULT 1,
+      min_deposit DECIMAL(18,2) DEFAULT 0,
+      commission_delay_days INT DEFAULT 0,
+      auto_approve BOOLEAN DEFAULT false,
+      ib_registration_open BOOLEAN DEFAULT true
+    )
+  `);
+  // Ensure default settings row exists
+  await query(`INSERT INTO ib_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+}
+
+router.get("/ib/stats", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const [ibRow]   = await query(`SELECT COUNT(*) AS total, SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending FROM ib_partners`);
+    const [refRow]  = await query(`SELECT COALESCE(SUM(referrals),0) AS total FROM ib_partners`);
+    const [comRow]  = await query(`SELECT COALESCE(SUM(commission_earned),0) AS total, COALESCE(SUM(CASE WHEN DATE(created_at)=CURRENT_DATE THEN commission_earned ELSE 0 END),0) AS today FROM ib_partners`);
+    const [penRow]  = await query(`SELECT COALESCE(SUM(commission_pending),0) AS total, COUNT(*) AS requests FROM ib_partners WHERE commission_pending > 0`);
+    res.json({
+      success: true,
+      data: {
+        totalIBs:             Number(ibRow?.total  || 0),
+        pendingIBs:           Number(ibRow?.pending || 0),
+        totalReferrals:       Number(refRow?.total  || 0),
+        totalCommissions:     Number(comRow?.total  || 0),
+        todayCommissions:     Number(comRow?.today  || 0),
+        pendingWithdrawals:   Number(penRow?.total  || 0),
+        withdrawalRequests:   Number(penRow?.requests || 0),
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/ib/list", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const rows = await query(`SELECT * FROM ib_partners WHERE status = 'active' ORDER BY created_at DESC`);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/ib/applications", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const rows = await query(`SELECT * FROM ib_applications WHERE status = 'pending' ORDER BY created_at DESC`);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/ib/applications/:id/approve", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const { id } = req.params;
+    const [app] = await query(`SELECT * FROM ib_applications WHERE id = ?`, [id]);
+    if (!app) return res.status(404).json({ success: false, error: "Application not found" });
+
+    await query(`UPDATE ib_applications SET status = 'approved' WHERE id = ?`, [id]);
+
+    // Create IB partner record
+    const ibCode = "IB" + Math.random().toString(36).toUpperCase().slice(2, 8);
+    await query(
+      `INSERT INTO ib_partners (id, user_id, name, email, phone, ib_code, status) VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+      [uuidv4(), app.user_id || "", app.name, app.email, app.phone, ibCode]
+    );
+    res.json({ success: true, message: "Application approved" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/ib/applications/:id/reject", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const { id } = req.params;
+    await query(`UPDATE ib_applications SET status = 'rejected' WHERE id = ?`, [id]);
+    res.json({ success: true, message: "Application rejected" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/ib/levels", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const rows = await query(`
+      SELECT l.*, COUNT(p.id) AS ib_count
+      FROM ib_levels l
+      LEFT JOIN ib_partners p ON p.level_id = l.id
+      GROUP BY l.id
+      ORDER BY l.commission_rate ASC
+    `);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/ib/levels", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const { name, commission_rate, min_referrals, description } = req.body;
+    if (!name || !commission_rate) return res.status(400).json({ success: false, error: "Name and commission rate are required" });
+    const id = uuidv4();
+    await query(
+      `INSERT INTO ib_levels (id, name, commission_rate, min_referrals, description) VALUES (?, ?, ?, ?, ?)`,
+      [id, name, commission_rate, min_referrals || 0, description || ""]
+    );
+    res.json({ success: true, message: "Level created", data: { id } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/ib/settings", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const [row] = await query(`SELECT * FROM ib_settings WHERE id = 1`);
+    res.json({ success: true, data: row || {} });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/ib/settings", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const { min_deposit, commission_delay_days, auto_approve, ib_registration_open } = req.body;
+    await query(
+      `UPDATE ib_settings SET min_deposit = ?, commission_delay_days = ?, auto_approve = ?, ib_registration_open = ? WHERE id = 1`,
+      [min_deposit || 0, commission_delay_days || 0, auto_approve ? true : false, ib_registration_open ? true : false]
+    );
+    res.json({ success: true, message: "Settings saved" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// MAM & PAM (Copy Trade Management) routes
+// ─────────────────────────────────────────────────────────────
+
+async function ensureMamPamTables() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS mam_masters (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36),
+      name VARCHAR(255),
+      email VARCHAR(255),
+      strategy TEXT,
+      profit_share DECIMAL(5,2) DEFAULT 20,
+      min_copy_amount DECIMAL(18,2) DEFAULT 100,
+      total_pnl DECIMAL(18,2) DEFAULT 0,
+      followers INT DEFAULT 0,
+      copied_trades INT DEFAULT 0,
+      admin_pool DECIMAL(18,2) DEFAULT 0,
+      status VARCHAR(20) DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS mam_applications (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36),
+      name VARCHAR(255),
+      email VARCHAR(255),
+      strategy TEXT,
+      profit_share DECIMAL(5,2) DEFAULT 20,
+      min_copy_amount DECIMAL(18,2) DEFAULT 100,
+      status VARCHAR(20) DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS mam_followers (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36),
+      master_id VARCHAR(36),
+      follower_name VARCHAR(255),
+      master_name VARCHAR(255),
+      email VARCHAR(255),
+      copy_amount DECIMAL(18,2) DEFAULT 0,
+      total_profit DECIMAL(18,2) DEFAULT 0,
+      trades_copied INT DEFAULT 0,
+      status VARCHAR(20) DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+router.get("/mampam/stats", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const [mRow]  = await query(`SELECT COUNT(*) AS total, SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending FROM mam_masters`);
+    const [fRow]  = await query(`SELECT COUNT(*) AS total FROM mam_followers WHERE status='active'`);
+    const [tRow]  = await query(`SELECT COALESCE(SUM(copied_trades),0) AS total FROM mam_masters`);
+    const [oRow]  = await query(`SELECT COUNT(*) AS total FROM trades WHERE status='OPEN'`);
+    const [pRow]  = await query(`SELECT COALESCE(SUM(admin_pool),0) AS total FROM mam_masters`);
+    res.json({
+      success: true,
+      data: {
+        masterTraders:  Number(mRow?.total   || 0),
+        pendingMasters: Number(mRow?.pending  || 0),
+        totalFollowers: Number(fRow?.total    || 0),
+        copiedTrades:   Number(tRow?.total    || 0),
+        openTrades:     Number(oRow?.total    || 0),
+        adminPool:      Number(pRow?.total    || 0),
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/mampam/masters", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const rows = await query(`SELECT * FROM mam_masters ORDER BY created_at DESC`);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/mampam/masters/:id/status", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const { id } = req.params;
+    const { status } = req.body;
+    await query(`UPDATE mam_masters SET status = ? WHERE id = ?`, [status, id]);
+    res.json({ success: true, message: "Status updated" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/mampam/applications", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const rows = await query(`SELECT * FROM mam_applications WHERE status = 'pending' ORDER BY created_at DESC`);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/mampam/applications/:id/approve", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const { id } = req.params;
+    const [app] = await query(`SELECT * FROM mam_applications WHERE id = ?`, [id]);
+    if (!app) return res.status(404).json({ success: false, error: "Application not found" });
+    await query(`UPDATE mam_applications SET status = 'approved' WHERE id = ?`, [id]);
+    await query(
+      `INSERT INTO mam_masters (id, user_id, name, email, strategy, profit_share, min_copy_amount) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [uuidv4(), app.user_id || "", app.name, app.email, app.strategy, app.profit_share || 20, app.min_copy_amount || 100]
+    );
+    res.json({ success: true, message: "Application approved — master trader created" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/mampam/applications/:id/reject", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const { id } = req.params;
+    await query(`UPDATE mam_applications SET status = 'rejected' WHERE id = ?`, [id]);
+    res.json({ success: true, message: "Application rejected" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/mampam/followers", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureMamPamTables();
+    const rows = await query(`SELECT * FROM mam_followers ORDER BY created_at DESC`);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

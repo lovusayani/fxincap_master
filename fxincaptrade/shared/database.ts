@@ -27,15 +27,26 @@ function getSslConfig() {
   };
 }
 
-// PostgreSQL Database Configuration
+// PostgreSQL Database Configuration.
+// No production host/user/database is defaulted here — a service started without
+// a .env must not silently connect to a real cluster. See docs/SECURITY.md §3.
 const dbConfig = {
-  host: process.env.PGHOST || "kaka1fxincap-do-user-32897695-0.d.db.ondigitalocean.com",
+  host: process.env.PGHOST || "",
   port: parseInt(process.env.PGPORT || "25060"),
-  user: process.env.PGUSER || "amitkaka",
+  user: process.env.PGUSER || "",
   password: process.env.PGPASSWORD || "",
-  database: process.env.PGDATABASE || "fxincapmain",
+  database: process.env.PGDATABASE || "",
   ssl: getSslConfig(),
 };
+
+const missingDbConfig = (["host", "user", "database"] as const).filter((k) => !dbConfig[k]);
+if (missingDbConfig.length > 0) {
+  console.warn(
+    `⚠️  fxincaptrade database configuration incomplete: missing ${missingDbConfig
+      .map((k) => `PG${k.toUpperCase()}`)
+      .join(", ")}. Database-backed routes will fail. See docs/ENVIRONMENT.md §4.`
+  );
+}
 
 export const pool = new Pool(dbConfig);
 

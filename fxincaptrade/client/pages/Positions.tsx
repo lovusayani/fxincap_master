@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import Header from "@/components/Header";
+import { apiUrl } from "@/lib/api";
 
 interface Position {
   id: string;
@@ -20,7 +21,7 @@ export default function PositionsPage() {
   const fetchPositions = () => {
     const token = localStorage.getItem("auth_token");
     setLoading(true);
-    fetch("/api/positions/open", {
+    fetch(apiUrl("/api/positions/open"), {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((r) => r.json())
@@ -33,7 +34,7 @@ export default function PositionsPage() {
 
   const closePosition = (id: string) => {
     const token = localStorage.getItem("auth_token");
-    fetch("/api/positions/close", {
+    fetch(apiUrl("/api/positions/close"), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ positionId: id }),

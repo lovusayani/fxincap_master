@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import styled from 'styled-components'
 import { theme } from '../styles/theme'
 import { useNavigate } from 'react-router-dom'
@@ -142,27 +142,30 @@ const Footer = styled.div`
 const menus = [
   { label: 'Dashboard', icon: 'dashboard' },
   {
-    label: 'Reminders', icon: 'notifications', children: [
-      { label: 'Quick Note' },
-      { label: 'Alert Settings' },
-    ]
-  },
-  {
-    label: 'Reports', icon: 'analytics', children: [
-      { label: 'Transactions' },
-      { label: 'Balance Sheet' },
-      { label: 'Report2' },
-    ]
-  },
-  {
     label: 'Members', icon: 'group', children: [
       { label: 'Member List', path: '/members/list' },
       { label: 'Member Profile', path: '/members/profile' },
+      { label: 'Traders', path: '/members/traders' },
+      { label: 'Sub Agents', path: '/members/sub-agents' },
+      { label: 'Kyc Status', path: '/user-kyc' },
     ]
   },
   {
-    label: 'Groups', icon: 'groups', children: [
+    label: 'Groups & Accounts', icon: 'groups', children: [
       { label: 'All Groups' },
+      { label: 'Group Setting', path: '/group-setting' },
+      { label: 'Account Types', path: '/account-types' },
+    ]
+  },
+  {
+    label: 'Trade Master', icon: 'monitoring', children: [
+      { label: 'Trade History', path: '/trade-setting' },
+      { label: 'Trade Settings', path: '/forex-charges' },
+    ]
+  },
+  {
+    label: 'Promo Offers', icon: 'trending_up', children: [
+      { label: 'Offers', path: '/market/offers' },
     ]
   },
   {
@@ -174,24 +177,22 @@ const menus = [
     ]
   },
   {
-    label: 'Kyc Status', icon: 'verified_user', children: [
-      { label: 'User Kyc', path: '/user-kyc' },
-      { label: 'Others Kyc' },
+    label: 'Reports', icon: 'analytics', children: [
+      { label: 'Transactions' },
+      { label: 'Balance Sheet' },
+      { label: 'Report2' },
     ]
   },
   {
-    label: 'Market', icon: 'trending_up', children: [
-      { label: 'Market1' },
-      { label: 'Offers', path: '/market/offers' },
+    label: 'IB Program', icon: 'workspace_premium', children: [
+      { label: 'IB Management', path: '/ib-program' },
     ]
   },
-  { label: 'IB Program', icon: 'workspace_premium' },
   {
-    label: 'Trade Master', icon: 'monitoring', children: [
-      { label: 'Trade Setting', path: '/trade-setting' },
+    label: 'Mam&Pam', icon: 'insights', children: [
+      { label: 'Copy Trade Management', path: '/mam-pam' },
     ]
   },
-  { label: 'Mam&Pam', icon: 'insights' },
   {
     label: 'Support', icon: 'support_agent', children: [
       { label: 'Tickets' },
@@ -277,7 +278,26 @@ const Chevron = styled.span`
 
 export const Sidebar = ({ expanded, onToggle }) => {
   const [openIndex, setOpenIndex] = useState(null)
+  const [appName, setAppName] = useState(() => localStorage.getItem('platform_name') || 'SuimFx')
   const navigate = useNavigate()
+
+  useEffect(() => {
+    // Fetch on mount so name is fresh even before visiting settings page
+    fetch('/api/admin/style-settings')
+      .then((r) => r.json())
+      .catch(() => null)
+      .then((json) => {
+        if (json?.success && json?.data?.platformName) {
+          const name = json.data.platformName
+          localStorage.setItem('platform_name', name)
+          setAppName(name)
+        }
+      })
+
+    const onUpdate = () => setAppName(localStorage.getItem('platform_name') || 'SuimFx')
+    window.addEventListener('platform-name-updated', onUpdate)
+    return () => window.removeEventListener('platform-name-updated', onUpdate)
+  }, [])
 
   const handleToggleItem = (idx, hasChildren) => {
     if (!hasChildren) return
@@ -303,7 +323,7 @@ export const Sidebar = ({ expanded, onToggle }) => {
         <LogoArea>
           <img src="/logo_white.png" alt="SUIMFX Logo" />
         </LogoArea>
-        <LogoText $visible={expanded}>SuimFx</LogoText>
+        <LogoText $visible={expanded}>{appName}</LogoText>
       </LogoContainer>
 
       <MenuList>
@@ -313,7 +333,6 @@ export const Sidebar = ({ expanded, onToggle }) => {
           return (
             <div key={idx}>
               <MenuItem
-                active={false}
                 title={item.label}
                 onClick={() => handleMenuClick(item, idx, hasChildren)}
               >

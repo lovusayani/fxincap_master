@@ -17,11 +17,18 @@ import { PendingDepositDetail } from './pages/PendingDepositDetail'
 import { PendingWithdrawalDetail } from './pages/PendingWithdrawalDetail'
 import { UserKycStatus } from './pages/UserKycStatus'
 import { TradeSetting } from './pages/TradeSetting'
+import { GroupSetting } from './pages/GroupSetting'
+import { ForexCharges } from './pages/ForexCharges'
 import { MiscellaneousSettings } from './pages/MiscellaneousSettings'
 import { Offers } from './pages/Offers'
 import { Wallet } from './pages/Wallet'
 import { ServerSettings } from './pages/ServerSettings'
 import { UserSettings } from './pages/UserSettings'
+import { TradersList } from './pages/TradersList'
+import { SubAgentsList } from './pages/SubAgentsList'
+import { AccountTypes } from './pages/AccountTypes'
+import { IBProgram } from './pages/IBProgram'
+import { MamPam } from './pages/MamPam'
 
 function App() {
   return (
@@ -51,16 +58,23 @@ function App() {
             <Route path="members/list" element={<MemberList />} />
             <Route path="members/profile" element={<MemberProfile />} />
             <Route path="members/profile/:id" element={<MemberProfile />} />
+            <Route path="members/traders" element={<TradersList />} />
+            <Route path="members/sub-agents" element={<SubAgentsList />} />
             <Route path="all-pendings" element={<AllPendings />} />
             <Route path="wallet" element={<Wallet />} />
             <Route path="pending-deposit/:id" element={<PendingDepositDetail />} />
             <Route path="pending-withdrawal/:id" element={<PendingWithdrawalDetail />} />
             <Route path="user-kyc" element={<UserKycStatus />} />
             <Route path="trade-setting" element={<TradeSetting />} />
+            <Route path="group-setting" element={<GroupSetting />} />
+            <Route path="account-types" element={<AccountTypes />} />
+            <Route path="forex-charges" element={<ForexCharges />} />
             <Route path="market/offers" element={<Offers />} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="server-settings" element={<ServerSettings />} />
             <Route path="miscellaneous-settings" element={<MiscellaneousSettings />} />
+            <Route path="ib-program" element={<IBProgram />} />
+            <Route path="mam-pam" element={<MamPam />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

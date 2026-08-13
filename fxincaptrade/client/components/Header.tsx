@@ -63,6 +63,7 @@ export default function Header() {
 
     const handleLogout = () => {
         localStorage.removeItem("auth_token");
+        localStorage.removeItem("selected_trading_mode");
         navigate("/login");
     };
 
@@ -79,7 +80,8 @@ export default function Header() {
     const desktopTopLinks = [
         { label: "Portfolio", path: "/portfolio" },
         { label: "Markets", path: "/markets" },
-        { label: "Mam/PaM", path: "/mampamm" },
+        { label: "MT5", path: "/mt5" },
+        { label: "Copy Trade", path: "/mampamm" },
         { label: "Wallet", path: "/wallet" },
         { label: "IB", path: "/ib" },
     ];
@@ -87,7 +89,7 @@ export default function Header() {
     const moreMenuItems = [
         { label: "Strategy", path: "/strategy" },
         { label: "TradeMaster", path: "/trademaster" },
-        { label: "MAM/PAMM", path: "/mampamm" },
+        { label: "Copy Trade", path: "/mampamm" },
     ];
 
     const profileMenuItems = [
@@ -107,7 +109,9 @@ export default function Header() {
     return (
         <header
             className={`platform-menu-surface sticky top-0 z-50 border-b ${isDark ? "border-white/10" : "border-gray-200"}`}
-            style={{ backgroundColor: isDark ? "var(--platform-header-bg, #991b1b)" : "#ffffff" }}
+            style={{
+                backgroundColor: `var(--platform-header-bg, ${isDark ? "#111827" : "#ffffff"})`,
+            }}
         >
             <div className="max-w-full px-4 py-2.5 flex items-center gap-3">
                 <div className="flex items-center gap-2 min-w-0 flex-shrink-0 lg:min-w-[170px] lg:w-[170px]">

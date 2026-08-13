@@ -1,5 +1,5 @@
-import React, { useEffect } from "react";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import React, { useEffect, useRef } from "react";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/toaster";
 import Dashboard from "@/pages/Dashboard";
 import Markets from "@/pages/Markets";
@@ -19,6 +19,26 @@ import HistoryPage from "@/pages/History";
 import PositionsPage from "@/pages/Positions";
 import SettingsPage from "@/pages/Settings";
 import IbPage from "@/pages/IB";
+import MT5Page from "@/pages/MT5";
+import { apiUrl } from "@/lib/api";
+
+function AutoLoginPage() {
+  const nav = useNavigate();
+  const ran = useRef(false);
+  useEffect(() => {
+    if (ran.current) return;
+    ran.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+    if (token) {
+      localStorage.setItem("auth_token", token);
+      nav("/", { replace: true });
+    } else {
+      nav("/login", { replace: true });
+    }
+  }, []);
+  return <div className="min-h-screen bg-black flex items-center justify-center text-white text-sm">Signing you in…</div>;
+}
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -484,7 +504,7 @@ export default function App() {
 
       const resolvedTheme = ["dark", "light"].includes(data.themeMode)
         ? data.themeMode
-        : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        : "dark";
 
       const topbarKey = data.topbarBgColor || data.headerColor || "default";
       const resolvedTopbar =
@@ -519,11 +539,16 @@ export default function App() {
       localStorage.setItem("platform_logo_dark", data.logoDarkUrl || "");
       localStorage.setItem("platform_logo_square", data.logoSquareUrl || "");
       window.dispatchEvent(new CustomEvent("platform-logos-updated"));
+
+      if (data.platformName) {
+        localStorage.setItem("platform_name", data.platformName);
+        window.dispatchEvent(new CustomEvent("platform-name-updated"));
+      }
     };
 
     const fetchStyleSettings = async () => {
       try {
-        const response = await fetch("/api/admin/style-settings", {
+        const response = await fetch(apiUrl("/api/admin/style-settings"), {
           method: "GET",
           credentials: "omit",
         });
@@ -552,6 +577,7 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/auto-login" element={<AutoLoginPage />} />
 
           <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
           <Route path="/markets" element={<RequireAuth><Markets /></RequireAuth>} />
@@ -569,6 +595,7 @@ export default function App() {
           <Route path="/positions" element={<RequireAuth><PositionsPage /></RequireAuth>} />
           <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
           <Route path="/ib" element={<RequireAuth><IbPage /></RequireAuth>} />
+          <Route path="/mt5" element={<RequireAuth><MT5Page /></RequireAuth>} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

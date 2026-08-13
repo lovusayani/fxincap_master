@@ -42,14 +42,21 @@ export function useMarketStream(symbols: string[]): Record<string, PriceTick> {
     symbolsRef.current = symbols;
   });
 
-  // Fetch a quote via HTTP and update state (fallback when WS quote is slow/missing)
+  // Fetch a quote via HTTP and update state (fallback when WS quote is slow/missing).
+  //
+  // fxincapws responds `{ success, quote: { bid, ask, ... }, provider }` — the
+  // quote is nested one level below the envelope. Reading `data.bid` yielded
+  // undefined, so this fallback never populated a price. Accept either shape.
   const fetchHttpQuote = useCallback((sym: string) => {
     fetch(`${HTTP_BASE}/quote/${sym}`)
       .then((r) => r.ok ? r.json() : null)
-      .then((data) => {
-        if (!mountedRef.current || !data || data.bid == null) return;
+      .then((payload) => {
+        if (!mountedRef.current || !payload) return;
+        const data = payload.quote ?? payload;
+        if (data?.bid == null) return;
         const bid = Number(data.bid);
         const ask = Number(data.ask ?? data.bid);
+        if (!Number.isFinite(bid) || bid <= 0) return;
         const spread = +(ask - bid).toFixed(5);
         if (!sessionOpenBid.current[sym]) sessionOpenBid.current[sym] = bid;
         const openBid = sessionOpenBid.current[sym];

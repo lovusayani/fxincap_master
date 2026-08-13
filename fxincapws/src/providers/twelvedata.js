@@ -9,6 +9,14 @@ function toTwelvedataSymbol(rawSymbol) {
 
   if (symbol.includes('/') || symbol.includes(':')) return symbol;
 
+  const spotMetals = {
+    XAUUSD: 'XAU/USD',
+    XAGUSD: 'XAG/USD',
+    XPTUSD: 'XPT/USD',
+    XPDUSD: 'XPD/USD',
+  };
+  if (spotMetals[symbol]) return spotMetals[symbol];
+
   // Convert common FX pairs like EURUSD -> EUR/USD
   const majors = new Set(['EUR', 'GBP', 'USD', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD']);
   if (symbol.length === 6) {
@@ -42,15 +50,25 @@ export async function getTwelvedataQuote(symbol, apiKey) {
   try {
     const { data } = await axios.get(TWELVEDATA_REST, {
       params: { symbol, apikey: apiKey },
-      timeout: 5000,
+      timeout: 8000,
     });
-    
-    if (data.status === 'error' || !data.close) {
-      console.error(`[twelvedata] API error for ${symbol}:`, data.message || 'no data');
+
+    if (!data || data.status === 'error' || (typeof data.code === 'number' && data.code >= 400)) {
+      console.error(`[twelvedata] API error for ${symbol}:`, data?.message || data?.status || data?.code || 'no data');
       return null;
     }
-    
-    const mid = parseFloat(data.close);
+
+    const closeRaw = data.close;
+    if (closeRaw === undefined || closeRaw === null || closeRaw === '') {
+      console.error(`[twelvedata] no close field for ${symbol}`);
+      return null;
+    }
+
+    const mid = parseFloat(closeRaw);
+    if (!Number.isFinite(mid)) {
+      console.error(`[twelvedata] invalid close for ${symbol}:`, closeRaw);
+      return null;
+    }
     const spread = mid * 0.0005; // 5 bps spread
     
     return {
@@ -208,17 +226,16 @@ export class TwelvedataProvider {
     const clients = this.providerToClients.get(providerSymbol) || new Set();
     clients.add(clientSymbol);
     this.providerToClients.set(providerSymbol, clients);
-    
-    // If WebSocket is connected, add symbol
-    // If WebSocket is connected, add symbol
+
+    // REST quotes work on all plan tiers; WebSocket may be limited (trial symbols only on free tier).
+    if (!this.pollInterval) {
+      this.startPolling();
+    }
+
     if (this.wsConnected && this.ws?.addSymbol) {
       this.ws.addSymbol(providerSymbol);
     } else if (!this.ws && this.enabled) {
-      // Lazy connect: first subscriber triggers WebSocket (symbols are now populated)
       this.connectWebSocket();
-    } else if (!this.pollInterval && !this.ws) {
-      // No WS and not enabled, fall back to REST polling
-      this.startPolling();
     }
     
     // Send cached quote if available

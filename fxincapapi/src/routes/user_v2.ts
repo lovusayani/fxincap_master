@@ -1,12 +1,13 @@
 import { Router, Request, Response } from "express";
 import { AuthRequest, verifyToken } from "./auth.js";
-import { query } from "../lib/database.js";
+import { query, getConnection } from "../lib/database.js";
 import { v4 as uuidv4 } from "uuid";
 import multer from "multer";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { sendDepositEmail, sendEmail } from "../lib/mailer.js";
+import { ensureAccountTypesTable } from "../lib/account-types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -411,20 +412,35 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
     const userId = req.user?.id;
     let mode = (req.query.mode as string) || "";
 
-    // If no mode specified, use the user's selected_trading_mode from their profile
+    // If no mode in query: prefer real when a real account row exists unless the user explicitly chose demo in Settings.
     if (!mode) {
       const profileRows = await query(
         "SELECT selected_trading_mode FROM user_profiles WHERE user_id = $1 LIMIT 1",
         [userId]
       ) as any[];
-      mode = Array.isArray(profileRows) && profileRows.length > 0
-        ? (profileRows[0].selected_trading_mode || "real")
-        : "real";
+      const persisted =
+        Array.isArray(profileRows) && profileRows.length > 0
+          ? profileRows[0].selected_trading_mode
+          : null;
+
+      const hasRealRows = await query(
+        "SELECT 1 FROM user_accounts WHERE user_id = $1 AND trading_mode = 'real' LIMIT 1",
+        [userId]
+      ) as any[];
+      const hasReal = Array.isArray(hasRealRows) && hasRealRows.length > 0;
+
+      if (hasReal) {
+        mode = persisted === "demo" ? "demo" : "real";
+      } else {
+        mode = persisted || "demo";
+      }
     }
 
-    // Fetch account by user_id and trading_mode
+    // Fetch the active account for this mode (a user may have several accounts per
+    // mode; exactly one is active at a time — see /accounts and /accounts/:id/activate).
+    // Banned accounts (admin action) are excluded even if still flagged is_active.
     const accountResults = await query(
-      "SELECT * FROM user_accounts WHERE user_id = $1 AND trading_mode = $2 LIMIT 1",
+      "SELECT * FROM user_accounts WHERE user_id = $1 AND trading_mode = $2 AND is_active = true AND account_status = 'active' LIMIT 1",
       [userId, mode]
     );
     
@@ -433,12 +449,14 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
       return res.json({
         success: true,
         balance: {
+          tradingMode: mode,
           accountNumber: null,
           balance: 0,
           equity: 0,
           margin: 0,
           freeMargin: 0,
           currency: "USD",
+          leverage: 100,
         },
       });
     }
@@ -455,19 +473,89 @@ router.get("/balance", verifyToken, async (req: AuthRequest, res) => {
     const computedAvailable = Math.max(0, totalBalance - lockedBalance);
     const availableBalance = storedAvailableBal > 0 ? storedAvailableBal : computedAvailable;
 
+    const levRows = await query("SELECT leverage FROM user_profiles WHERE user_id = $1 LIMIT 1", [userId]) as any[];
+    const profileLev =
+      Array.isArray(levRows) && levRows.length > 0 ? Number((levRows[0] as any).leverage || 100) : 100;
+    const accountLeverage = Math.min(100, Math.max(1, Number.isFinite(profileLev) ? profileLev : 100));
+
     res.json({
       success: true,
       balance: {
+        tradingMode: account.trading_mode || mode,
         accountNumber: account.account_number || account.accountNumber || null,
         balance: totalBalance,
         equity: parseFloat(account.equity) || 0,
         margin: lockedBalance,
         freeMargin: availableBalance,
         currency: account.currency || "USD",
+        leverage: accountLeverage,
       },
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/trading-mode", verifyToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+    const { tradingMode: requestedTradingMode, mode } = req.body || {};
+    const tradingMode = requestedTradingMode || mode;
+    if (!tradingMode || !["demo", "real"].includes(String(tradingMode))) {
+      return res.status(400).json({ success: false, message: "Invalid trading mode" });
+    }
+
+    const acctRows = await query(
+      "SELECT account_number, balance, equity, margin_free FROM user_accounts WHERE user_id = $1 AND trading_mode = $2 AND is_active = true AND account_status = 'active' LIMIT 1",
+      [userId, tradingMode]
+    );
+    if (!Array.isArray(acctRows) || acctRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Account not found for selected mode, or it has been banned" });
+    }
+
+    const updated = await query(
+      "UPDATE user_profiles SET selected_trading_mode = $1 WHERE user_id = $2 RETURNING user_id",
+      [tradingMode, userId]
+    );
+    if (!Array.isArray(updated) || updated.length === 0) {
+      await query("INSERT INTO user_profiles (id, user_id, selected_trading_mode) VALUES ($1, $2, $3)", [
+        uuidv4(),
+        userId,
+        tradingMode,
+      ]);
+    }
+
+    const acct = acctRows[0] as any;
+    const margin =
+      acct.margin_free != null && acct.equity != null && acct.balance != null
+        ? Math.max(0, Number(acct.equity) - Number(acct.margin_free))
+        : 0;
+    const marginLevel = margin > 0 ? Number(((Number(acct.equity) / margin) * 100).toFixed(2)) : 0;
+    const levRows = await query("SELECT leverage FROM user_profiles WHERE user_id = $1 LIMIT 1", [userId]);
+    const leverage =
+      Array.isArray(levRows) && levRows.length > 0 ? Number((levRows[0] as any).leverage || 500) : 500;
+
+    res.json({
+      success: true,
+      message: "Trading mode applied",
+      data: {
+        tradingMode,
+        accountNumber: acct.account_number,
+        balance: Number(acct.balance),
+        equity: Number(acct.equity),
+        margin,
+        freeMargin: Number(acct.margin_free),
+        marginLevel,
+        currency: "USD",
+        leverage,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error updating trading mode:", error);
+    res.status(500).json({ success: false, message: "Failed to update trading mode" });
   }
 });
 
@@ -480,9 +568,55 @@ router.get("/account-activation-settings", verifyToken, async (_req: AuthRequest
   }
 });
 
+// ==========================================
+// Account Types — for trader selection
+// ==========================================
+router.get("/account-types", verifyToken, async (req: AuthRequest, res) => {
+  try {
+    await ensureAccountTypesTable();
+
+    const type = (req.query.type as string) || "real";
+    const rows = (
+      type === "all"
+        ? await query(`
+            SELECT id, name, description, min_deposit, leverage, exposure_limit, is_demo, created_at
+            FROM account_types
+            ORDER BY is_demo ASC, created_at DESC
+          `)
+        : await query(
+            `
+            SELECT id, name, description, min_deposit, leverage, exposure_limit, is_demo, created_at
+            FROM account_types
+            WHERE is_demo = ?
+            ORDER BY created_at DESC
+          `,
+            [type === "demo" ? true : false]
+          )
+    ) as any[];
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      minDeposit: Number(row.min_deposit || 0),
+      leverage: Number(row.leverage || 100),
+      exposureLimit: Number(row.exposure_limit || 0),
+      isDemo: Boolean(row.is_demo),
+    }));
+
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res) => {
   try {
+    await ensureAccountTypesTable();
+
     const userId = req.user?.id;
+    const { accountTypeId } = req.body;
+
     if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
@@ -502,6 +636,7 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
 
     if (Array.isArray(existingReal) && existingReal.length > 0) {
       const account = existingReal[0];
+      await query("UPDATE user_profiles SET selected_trading_mode = ? WHERE user_id = ?", ["real", userId]);
       return res.json({
         success: true,
         alreadyExists: true,
@@ -514,7 +649,7 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
           margin: 0,
           freeMargin: Number(account.margin_free || 0),
           currency: String(account.currency || "USD"),
-          leverage: 500,
+          leverage: Number(account.leverage || 500),
         },
       });
     }
@@ -547,11 +682,28 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
       }
     }
 
+    // Get account type details if provided
+    let leverage = 500;
+    let selectedAccountTypeId = accountTypeId;
+
+    if (accountTypeId) {
+      const accountTypeRows = await query(
+        "SELECT leverage FROM account_types WHERE id = ? LIMIT 1",
+        [accountTypeId]
+      ) as any[];
+
+      if (Array.isArray(accountTypeRows) && accountTypeRows.length > 0) {
+        leverage = Number(accountTypeRows[0].leverage || 500);
+      }
+    }
+
     const realAccountNumber = `REAL-${String(userId).slice(0, 8).toUpperCase()}-${Date.now().toString().slice(-6)}`;
     await query(
-      "INSERT INTO user_accounts (id, user_id, account_number, balance, equity, margin_free, available_balance, trading_mode, currency, account_status) VALUES (?, ?, ?, ?, ?, ?, ?, 'real', 'USD', 'active')",
-      [uuidv4(), userId, realAccountNumber, 0, 0, 0, 0]
+      "INSERT INTO user_accounts (id, user_id, account_number, balance, equity, margin_free, available_balance, trading_mode, currency, account_status, account_type_id, leverage, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 'real', 'USD', 'active', ?, ?, true)",
+      [uuidv4(), userId, realAccountNumber, 0, 0, 0, 0, selectedAccountTypeId || null, leverage]
     );
+
+    await query("UPDATE user_profiles SET selected_trading_mode = ? WHERE user_id = ?", ["real", userId]);
 
     const message = settings.kycRequiredForRealAccount
       ? "Your real account has been activated successfully"
@@ -568,11 +720,221 @@ router.post("/activate-real-account", verifyToken, async (req: AuthRequest, res)
         margin: 0,
         freeMargin: 0,
         currency: "USD",
-        leverage: 500,
+        leverage,
       },
     });
   } catch (error: any) {
-    return res.status(500).json({ success: false, message: "Failed to activate real account, please try again later", error: error.message });
+    console.error("[activate-real-account] ERROR:", error.message, error.stack);
+    return res.status(500).json({ success: false, message: error.message || "Failed to activate real account, please try again later" });
+  }
+});
+
+// ==========================================
+// Multi-Account — a trader may hold several accounts (one per admin-defined
+// account type, across both demo and real). Exactly one account per mode is
+// "active" at a time; that's the one balance/trades resolve against.
+// ==========================================
+
+router.get("/accounts", verifyToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    const rows = (await query(
+      `SELECT ua.id, ua.account_number, ua.trading_mode, ua.balance, ua.equity, ua.margin_free,
+              ua.available_balance, ua.currency, ua.leverage, ua.is_active, ua.account_status,
+              ua.account_type_id, ua.created_at,
+              at.name AS account_type_name, at.description AS account_type_description,
+              at.min_deposit, at.exposure_limit
+       FROM user_accounts ua
+       LEFT JOIN account_types at ON at.id = ua.account_type_id
+       WHERE ua.user_id = $1
+       ORDER BY ua.trading_mode ASC, ua.is_active DESC, ua.created_at ASC`,
+      [userId]
+    )) as any[];
+
+    const data = (Array.isArray(rows) ? rows : []).map((row: any) => ({
+      id: row.id,
+      accountNumber: row.account_number,
+      tradingMode: row.trading_mode,
+      balance: Number(row.balance || 0),
+      equity: Number(row.equity || 0),
+      freeMargin: Number(row.margin_free || 0),
+      availableBalance: Number(row.available_balance || 0),
+      currency: row.currency || "USD",
+      leverage: Number(row.leverage || 500),
+      isActive: Boolean(row.is_active),
+      status: row.account_status,
+      accountTypeId: row.account_type_id,
+      accountTypeName: row.account_type_name || "Standard",
+      accountTypeDescription: row.account_type_description || null,
+      minDeposit: Number(row.min_deposit || 0),
+      exposureLimit: Number(row.exposure_limit || 0),
+      createdAt: row.created_at,
+    }));
+
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/accounts", verifyToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const { accountTypeId } = req.body || {};
+    if (!accountTypeId) {
+      return res.status(400).json({ success: false, message: "accountTypeId is required" });
+    }
+
+    await ensureAccountTypesTable();
+
+    const typeRows = (await query(
+      "SELECT id, name, leverage, is_demo FROM account_types WHERE id = ? LIMIT 1",
+      [accountTypeId]
+    )) as any[];
+    if (!Array.isArray(typeRows) || typeRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Account type not found" });
+    }
+    const accountType = typeRows[0];
+    const mode: "demo" | "real" = accountType.is_demo ? "demo" : "real";
+
+    const existingOfType = (await query(
+      "SELECT id FROM user_accounts WHERE user_id = ? AND account_type_id = ? LIMIT 1",
+      [userId, accountTypeId]
+    )) as any[];
+    if (Array.isArray(existingOfType) && existingOfType.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `You already have a ${accountType.name} account. Switch to it instead of opening another.`,
+        existingAccountId: existingOfType[0].id,
+      });
+    }
+
+    if (mode === "real") {
+      const settings = await getUserAccountSettings();
+      if (!settings.realAccountActivationEnabled) {
+        return res.status(403).json({
+          success: false,
+          message: "Real account activation is currently unavailable, please contact support for more information",
+        });
+      }
+      if (settings.kycRequiredForRealAccount) {
+        const profileRows = (await query(
+          "SELECT kyc_status FROM user_profiles WHERE user_id = ? LIMIT 1",
+          [userId]
+        )) as any[];
+        const kycStatus = String(
+          (Array.isArray(profileRows) && profileRows.length > 0 ? profileRows[0].kyc_status : "pending") || "pending"
+        ).toLowerCase();
+        if (!["approved", "verified"].includes(kycStatus)) {
+          return res.status(400).json({
+            success: false,
+            requiresKyc: true,
+            message: "Please complete your KYC verification to open a real account",
+          });
+        }
+      }
+    }
+
+    const accountId = uuidv4();
+    const prefix = mode === "real" ? "REAL" : "DEMO";
+    const accountNumber = `${prefix}-${String(userId).slice(0, 8).toUpperCase()}-${Date.now().toString().slice(-6)}`;
+    const leverage = Number(accountType.leverage || 500);
+
+    const conn = await getConnection();
+    try {
+      await conn.query("BEGIN");
+      // Newly opened account becomes the active one for its mode.
+      await conn.query("UPDATE user_accounts SET is_active = false WHERE user_id = $1 AND trading_mode = $2", [userId, mode]);
+      await conn.query(
+        `INSERT INTO user_accounts
+           (id, user_id, account_number, balance, equity, margin_free, available_balance,
+            trading_mode, currency, account_status, account_type_id, leverage, is_active)
+         VALUES ($1, $2, $3, 0, 0, 0, 0, $4, 'USD', 'active', $5, $6, true)`,
+        [accountId, userId, accountNumber, mode, accountType.id, leverage]
+      );
+      await conn.query("UPDATE user_profiles SET selected_trading_mode = $1 WHERE user_id = $2", [mode, userId]);
+      await conn.query("COMMIT");
+    } catch (txError) {
+      await conn.query("ROLLBACK").catch(() => {});
+      throw txError;
+    } finally {
+      conn.release();
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `${accountType.name} ${mode} account opened successfully`,
+      data: {
+        id: accountId,
+        accountNumber,
+        tradingMode: mode,
+        balance: 0,
+        equity: 0,
+        freeMargin: 0,
+        currency: "USD",
+        leverage,
+        accountTypeId: accountType.id,
+        accountTypeName: accountType.name,
+        isActive: true,
+      },
+    });
+  } catch (error: any) {
+    console.error("[POST /accounts] ERROR:", error.message);
+    res.status(500).json({ success: false, message: error.message || "Failed to open account" });
+  }
+});
+
+router.put("/accounts/:id/activate", verifyToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const { id } = req.params;
+
+    const acctRows = (await query(
+      "SELECT id, trading_mode, account_status FROM user_accounts WHERE id = ? AND user_id = ? LIMIT 1",
+      [id, userId]
+    )) as any[];
+    if (!Array.isArray(acctRows) || acctRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Account not found" });
+    }
+    const account = acctRows[0];
+    if (account.account_status !== "active") {
+      return res.status(400).json({ success: false, message: "This account is not available to trade" });
+    }
+    const mode = account.trading_mode;
+
+    const conn = await getConnection();
+    try {
+      await conn.query("BEGIN");
+      await conn.query("UPDATE user_accounts SET is_active = false WHERE user_id = $1 AND trading_mode = $2", [userId, mode]);
+      await conn.query("UPDATE user_accounts SET is_active = true WHERE id = $1", [id]);
+      await conn.query(
+        `UPDATE user_profiles SET selected_trading_mode = $1 WHERE user_id = $2
+         RETURNING user_id`,
+        [mode, userId]
+      ).then(async (r: any) => {
+        if (!r.rows || r.rows.length === 0) {
+          await conn.query("INSERT INTO user_profiles (id, user_id, selected_trading_mode) VALUES ($1, $2, $3)", [
+            uuidv4(),
+            userId,
+            mode,
+          ]);
+        }
+      });
+      await conn.query("COMMIT");
+    } catch (txError) {
+      await conn.query("ROLLBACK").catch(() => {});
+      throw txError;
+    } finally {
+      conn.release();
+    }
+
+    res.json({ success: true, message: "Account switched successfully", data: { id, tradingMode: mode } });
+  } catch (error: any) {
+    console.error("[PUT /accounts/:id/activate] ERROR:", error.message);
+    res.status(500).json({ success: false, message: error.message || "Failed to switch account" });
   }
 });
 
@@ -1402,6 +1764,254 @@ router.post("/beneficiary", verifyToken, async (req: AuthRequest, res: Response)
   } catch (error: any) {
     console.error("Add beneficiary error:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to add beneficiary" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// User: IB (Introducing Broker) routes
+// ─────────────────────────────────────────────────────────────
+
+// GET /ib/status — check user's IB application/partner status
+router.get("/ib/status", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+
+    // Check if already an active IB partner
+    const [partner] = await query(
+      `SELECT p.*, l.name AS level_name FROM ib_partners p
+       LEFT JOIN ib_levels l ON l.id = p.level_id
+       WHERE p.user_id = ? AND p.status = 'active' LIMIT 1`,
+      [userId]
+    );
+    if (partner) {
+      return res.json({
+        success: true,
+        data: {
+          status: "approved",
+          ib_code: partner.ib_code,
+          referrals: partner.referrals || 0,
+          commission_earned: partner.commission_earned || 0,
+          commission_pending: partner.commission_pending || 0,
+          level_name: partner.level_name || null,
+        }
+      });
+    }
+
+    // Check pending application
+    const [pending] = await query(
+      `SELECT id, status FROM ib_applications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+    if (pending) {
+      return res.json({ success: true, data: { status: pending.status === "rejected" ? "rejected" : "pending" } });
+    }
+
+    res.json({ success: true, data: { status: "none" } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /ib/apply — submit IB application
+router.post("/ib/apply", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { experience, phone } = req.body;
+
+    // Block duplicate pending applications
+    const [existing] = await query(
+      `SELECT id FROM ib_applications WHERE user_id = ? AND status = 'pending'`,
+      [userId]
+    );
+    if (existing) return res.status(400).json({ success: false, error: "You already have a pending IB application" });
+
+    const [user] = await query(`SELECT email, first_name, last_name FROM users WHERE id = ?`, [userId]);
+    const fullName = `${user?.first_name || ""} ${user?.last_name || ""}`.trim() || user?.email || "";
+
+    await query(
+      `INSERT INTO ib_applications (id, user_id, name, email, phone, experience, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+      [uuidv4(), userId, fullName, user?.email || "", phone || "", experience || ""]
+    );
+
+    res.json({ success: true, message: "IB application submitted successfully" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// User: MAM / PAM (Copy Trading) routes
+// ─────────────────────────────────────────────────────────────
+
+// GET /accounts — trader's own trading accounts (for dropdowns)
+router.get("/accounts", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const rows = await query(
+      `SELECT id, account_number, trading_mode, balance, currency, account_status FROM user_accounts WHERE user_id = ? AND account_status = 'active'`,
+      [userId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /mampam/masters — list active master traders
+router.get("/mampam/masters", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const rows = await query(`
+      SELECT m.*,
+        CASE WHEN f.id IS NOT NULL THEN true ELSE false END AS is_following
+      FROM mam_masters m
+      LEFT JOIN mam_followers f ON f.master_id = m.id AND f.user_id = ? AND f.status = 'active'
+      WHERE m.status = 'active'
+      ORDER BY m.followers DESC
+    `, [userId]);
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /mampam/apply — apply to become a master trader
+router.post("/mampam/apply", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { name, strategy, account_id, profit_share } = req.body;
+    if (!name || !account_id) return res.status(400).json({ success: false, error: "Name and account are required" });
+
+    // Check not already applied
+    const [existing] = await query(
+      `SELECT id FROM mam_applications WHERE user_id = ? AND status = 'pending'`, [userId]
+    );
+    if (existing) return res.status(400).json({ success: false, error: "You already have a pending application" });
+
+    // Get user info for the application
+    const [user] = await query(`SELECT email, first_name, last_name FROM users WHERE id = ?`, [userId]);
+    const fullName = name || `${user?.first_name || ""} ${user?.last_name || ""}`.trim();
+
+    await query(
+      `INSERT INTO mam_applications (id, user_id, name, email, strategy, profit_share, min_copy_amount, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [uuidv4(), userId, fullName, user?.email || "", strategy || "", profit_share || 10, 100]
+    );
+    res.json({ success: true, message: "Application submitted successfully" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /mampam/follow/:masterId — start copying a master
+router.post("/mampam/follow/:masterId", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { masterId } = req.params;
+    const { account_id, copy_amount } = req.body;
+
+    const [master] = await query(`SELECT * FROM mam_masters WHERE id = ? AND status = 'active'`, [masterId]);
+    if (!master) return res.status(404).json({ success: false, error: "Master trader not found" });
+
+    // Check not already following
+    const [existing] = await query(
+      `SELECT id FROM mam_followers WHERE user_id = ? AND master_id = ? AND status = 'active'`,
+      [userId, masterId]
+    );
+    if (existing) return res.status(400).json({ success: false, error: "You are already following this master" });
+
+    const [user] = await query(`SELECT email, first_name, last_name FROM users WHERE id = ?`, [userId]);
+    const followerName = `${user?.first_name || ""} ${user?.last_name || ""}`.trim() || user?.email;
+
+    await query(
+      `INSERT INTO mam_followers (id, user_id, master_id, follower_name, master_name, email, copy_amount, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
+      [uuidv4(), userId, masterId, followerName, master.name, user?.email || "", copy_amount || 100]
+    );
+
+    // Increment master's follower count
+    await query(`UPDATE mam_masters SET followers = followers + 1 WHERE id = ?`, [masterId]);
+
+    res.json({ success: true, message: "Now copying this master trader" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /mampam/unfollow/:followId — stop copying
+router.delete("/mampam/unfollow/:followId", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { followId } = req.params;
+
+    const [follow] = await query(`SELECT * FROM mam_followers WHERE id = ? AND user_id = ?`, [followId, userId]);
+    if (!follow) return res.status(404).json({ success: false, error: "Subscription not found" });
+
+    await query(`UPDATE mam_followers SET status = 'inactive' WHERE id = ?`, [followId]);
+    await query(`UPDATE mam_masters SET followers = GREATEST(0, followers - 1) WHERE id = ?`, [follow.master_id]);
+
+    res.json({ success: true, message: "Stopped copying this master" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /mampam/subscriptions — user's active copy subscriptions
+router.get("/mampam/subscriptions", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const rows = await query(
+      `SELECT * FROM mam_followers WHERE user_id = ? ORDER BY created_at DESC`,
+      [userId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /mampam/trades — copied trades for this user (from masters they follow)
+router.get("/mampam/trades", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    // Get master IDs this user follows
+    const follows = await query(
+      `SELECT master_id, master_name FROM mam_followers WHERE user_id = ? AND status = 'active'`,
+      [userId]
+    );
+    if (!follows || follows.length === 0) return res.json({ success: true, data: [] });
+
+    const masterIds = follows.map((f: any) => f.master_id);
+    const masterNameMap: Record<string, string> = {};
+    follows.forEach((f: any) => { masterNameMap[f.master_id] = f.master_name; });
+
+    const masterUsers = await query(
+      `SELECT id FROM mam_masters WHERE id IN (${masterIds.map(() => "?").join(",")})`,
+      masterIds
+    );
+    if (!masterUsers || masterUsers.length === 0) return res.json({ success: true, data: [] });
+
+    const masterUserIds = masterUsers.map((m: any) => m.user_id).filter(Boolean);
+    if (masterUserIds.length === 0) return res.json({ success: true, data: [] });
+
+    const trades = await query(
+      `SELECT t.id, t.symbol, t.side, t.volume, t.entry_price, t.close_price,
+              COALESCE(t.final_pnl, t.pnl, 0) AS pnl, t.status, t.opened_at, t.user_id
+       FROM trades t
+       WHERE t.user_id IN (${masterUserIds.map(() => "?").join(",")})
+       ORDER BY t.opened_at DESC LIMIT 100`,
+      masterUserIds
+    );
+
+    const result = (trades || []).map((t: any) => {
+      const master = masterUsers.find((m: any) => m.user_id === t.user_id);
+      return { ...t, master_name: master ? masterNameMap[master.id] || "Master" : "Master" };
+    });
+
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

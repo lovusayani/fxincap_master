@@ -1,0 +1,56 @@
+name: Test and promote dev
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  test-and-promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out dev
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install and test API
+        working-directory: fxincapapi
+        run: pnpm install --frozen-lockfile && pnpm run typecheck && pnpm test -- --run
+
+      - name: Install and test trading service
+        working-directory: fxincaptrade
+        run: pnpm install --frozen-lockfile && pnpm run typecheck && pnpm test
+
+      - name: Install and test WebSocket service
+        working-directory: fxincapws
+        run: pnpm install --frozen-lockfile && pnpm test
+
+      - name: Install and build web applications
+        run: |
+          cd fxincap && pnpm install --frozen-lockfile && pnpm run build
+          cd ../fxincapadmin && pnpm install --frozen-lockfile && pnpm run build
+
+      - name: Open or update promotion PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER=$(gh pr list --head dev --base main --state open --json number --jq '.[0].number')
+          if [ -z "$PR_NUMBER" ]; then
+            gh pr create --base main --head dev \
+              --title "promote: dev to main" \
+              --body "Automated promotion after the dev test suite passed. Merging this PR deploys main to production."
+            PR_NUMBER=$(gh pr list --head dev --base main --state open --json number --jq '.[0].number')
+          fi
+          gh pr merge "$PR_NUMBER" --auto --merge --delete-branch=false

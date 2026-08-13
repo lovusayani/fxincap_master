@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import Header from "@/components/Header";
+import { apiUrl } from "@/lib/api";
 
 interface UserProfile {
   email: string;
@@ -24,7 +25,7 @@ export default function ProfilePage() {
 
   const fetchProfile = () => {
     const token = localStorage.getItem("auth_token");
-    fetch("/api/user/profile", {
+    fetch(apiUrl("/api/user/profile"), {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((r) => r.json())
@@ -45,7 +46,7 @@ export default function ProfilePage() {
     setMessage(null);
     const token = localStorage.getItem("auth_token");
     try {
-      const res = await fetch("/api/user/profile", {
+      const res = await fetch(apiUrl("/api/user/profile"), {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify(form),

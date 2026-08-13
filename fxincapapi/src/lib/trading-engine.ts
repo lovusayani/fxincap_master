@@ -1,4 +1,6 @@
 import { query } from "./database.js";
+import { WS_QUOTE_BASE_URL } from "./env.js";
+import { getServerQuote, isFresh, executablePrice } from "./market-price.js";
 
 export interface Trade {
   id: number;
@@ -25,6 +27,14 @@ export interface Trade {
 function getContractSize(symbol: string): number {
   const upper = String(symbol || "").toUpperCase();
 
+  if (upper.includes("BTC")) {
+    return 1;
+  }
+
+  if (upper.includes("ETH")) {
+    return 1;
+  }
+
   if (upper.startsWith("XAU")) {
     return 100;
   }
@@ -40,17 +50,63 @@ function getTradeNotional(symbol: string, volume: number, price: number): number
   return getContractSize(symbol) * volume * price;
 }
 
+/**
+ * Required margin, or `null` when the inputs are not a valid trade.
+ *
+ * This previously returned `0` for malformed input, which silently produced a
+ * zero-margin (free) trade instead of a rejection. Callers must treat `null` as
+ * "reject the operation".
+ */
 export function getRequiredMargin(
   symbol: string,
   volume: number,
   entryPrice: number,
   leverage: number
-): number {
-  if (!Number.isFinite(volume) || !Number.isFinite(entryPrice) || !Number.isFinite(leverage) || volume <= 0 || entryPrice <= 0 || leverage <= 0) {
-    return 0;
+): number | null {
+  if (
+    !Number.isFinite(volume) ||
+    !Number.isFinite(entryPrice) ||
+    !Number.isFinite(leverage) ||
+    volume <= 0 ||
+    entryPrice <= 0 ||
+    leverage <= 0
+  ) {
+    return null;
   }
 
   return Number((getTradeNotional(symbol, volume, entryPrice) / leverage).toFixed(2));
+}
+
+/**
+ * Resolves the account a trade/balance operation should apply to: the user's
+ * currently active account within their currently selected trading mode.
+ * Centralizing this avoids the previous bug where balance updates matched
+ * every account row for a user_id (demo and real together) since neither
+ * mode nor "which account" was filtered.
+ */
+export async function resolveActiveAccountId(userId: string, conn?: any): Promise<string | null> {
+  const runQuery = async (sql: string, params: any[]): Promise<any[]> => {
+    if (conn) {
+      const r = await conn.query(sql, params);
+      return r.rows;
+    }
+    return (await query(sql, params)) as any[];
+  };
+
+  const profileRows = await runQuery(
+    `SELECT selected_trading_mode FROM user_profiles WHERE user_id = $1 LIMIT 1`,
+    [userId]
+  );
+  const mode =
+    Array.isArray(profileRows) && profileRows.length > 0
+      ? profileRows[0].selected_trading_mode || "demo"
+      : "demo";
+
+  const acctRows = await runQuery(
+    `SELECT id FROM user_accounts WHERE user_id = $1 AND trading_mode = $2 AND is_active = true AND account_status = 'active' LIMIT 1`,
+    [userId, mode]
+  );
+  return Array.isArray(acctRows) && acctRows.length > 0 ? String(acctRows[0].id) : null;
 }
 
 export async function validateTradeOpen(
@@ -97,8 +153,15 @@ export async function validateTradeOpen(
     }
 
     const balanceResult = await getAvailableBalance(userId);
+    if (!balanceResult.success) {
+      return { valid: false, error: balanceResult.error || "No active trading account found. Please select an account in Settings." };
+    }
     const availableBalance = balanceResult.availableBalance || 0;
     const requiredBalance = getRequiredMargin(symbol, volume, entryPrice, leverage);
+
+    if (requiredBalance == null) {
+      return { valid: false, error: "Invalid volume, price or leverage for margin calculation" };
+    }
 
     if (availableBalance < requiredBalance) {
       return {
@@ -133,11 +196,21 @@ export async function createTrade(
     await conn.query("BEGIN");
 
     const lockedBalance = getRequiredMargin(symbol, volume, entryPrice, leverage);
+    if (lockedBalance == null) {
+      await conn.query("ROLLBACK");
+      return { success: false, error: "Invalid volume, price or leverage for margin calculation" };
+    }
+
+    const accountId = await resolveActiveAccountId(userId, conn);
+    if (!accountId) {
+      await conn.query("ROLLBACK");
+      return { success: false, error: "No active trading account found. Please select an account in Settings." };
+    }
 
     const tradeResult = await conn.query(
-      `INSERT INTO trades (user_id, symbol, side, volume, entry_price, take_profit, stop_loss, leverage, locked_balance, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'OPEN') RETURNING id`,
-      [userId, symbol, side, volume, entryPrice, takeProfit, stopLoss, leverage, lockedBalance]
+      `INSERT INTO trades (user_id, account_id, symbol, side, volume, entry_price, take_profit, stop_loss, leverage, locked_balance, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'OPEN') RETURNING id`,
+      [userId, accountId, symbol, side, volume, entryPrice, takeProfit, stopLoss, leverage, lockedBalance]
     );
 
     const tradeId = tradeResult.rows[0]?.id;
@@ -146,7 +219,7 @@ export async function createTrade(
       return { success: false, error: "Failed to create trade record" };
     }
 
-    const lockResult = await lockBalance(userId, lockedBalance, conn);
+    const lockResult = await lockBalance(accountId, lockedBalance, conn);
     if (!lockResult.success) {
       await conn.query("ROLLBACK");
       return { success: false, error: lockResult.error };
@@ -187,7 +260,7 @@ export async function calculatePnL(
 }
 
 export async function lockBalance(
-  userId: string,
+  accountId: string,
   amount: number,
   conn?: any
 ): Promise<{ success: boolean; error?: string }> {
@@ -198,9 +271,9 @@ export async function lockBalance(
       `UPDATE user_accounts
          SET locked_balance = locked_balance + $1,
              available_balance = GREATEST(0, GREATEST(available_balance, balance - locked_balance) - $2)
-       WHERE user_id = $3
+       WHERE id = $3
          AND GREATEST(available_balance, balance - locked_balance) >= $4`,
-      [amount, amount, userId, amount]
+      [amount, amount, accountId, amount]
     );
 
     const updated = results.rowCount ?? 0;
@@ -220,7 +293,7 @@ export async function lockBalance(
 }
 
 export async function unlockBalance(
-  userId: string,
+  accountId: string,
   amount: number,
   conn?: any
 ): Promise<{ success: boolean; error?: string }> {
@@ -231,8 +304,8 @@ export async function unlockBalance(
       `UPDATE user_accounts
        SET locked_balance = GREATEST(0, locked_balance - $1),
            available_balance = GREATEST(0, available_balance + $2)
-       WHERE user_id = $3`,
-      [amount, amount, userId]
+       WHERE id = $3`,
+      [amount, amount, accountId]
     );
 
     if (!conn) connection.release();
@@ -256,7 +329,7 @@ export async function closeTrade(
     await conn.query("BEGIN");
 
     const tradesResult = await conn.query(
-      `SELECT user_id, symbol, side, volume, entry_price, locked_balance, leverage, opened_at
+      `SELECT user_id, account_id, symbol, side, volume, entry_price, locked_balance, leverage, opened_at
          FROM trades
         WHERE id = $1 AND status = 'OPEN'`,
       [tradeId]
@@ -313,15 +386,25 @@ export async function closeTrade(
       ]
     );
 
-    const unlockResult = await unlockBalance(trade.user_id, trade.locked_balance, conn);
+    // Legacy trades opened before account tagging existed have no account_id;
+    // fall back to the user's current active account rather than no-op.
+    const settlementAccountId: string | null =
+      trade.account_id || (await resolveActiveAccountId(trade.user_id, conn));
+
+    if (!settlementAccountId) {
+      await conn.query("ROLLBACK");
+      return { success: false, error: "No active trading account found to settle this trade against" };
+    }
+
+    const unlockResult = await unlockBalance(settlementAccountId, trade.locked_balance, conn);
     if (!unlockResult.success) {
       await conn.query("ROLLBACK");
       return { success: false, error: unlockResult.error };
     }
 
     await conn.query(
-      `UPDATE user_accounts SET balance = balance + $1, available_balance = available_balance + $2 WHERE user_id = $3`,
-      [finalPnL, finalPnL, trade.user_id]
+      `UPDATE user_accounts SET balance = balance + $1, available_balance = available_balance + $2 WHERE id = $3`,
+      [finalPnL, finalPnL, settlementAccountId]
     );
 
     await conn.query("COMMIT");
@@ -374,9 +457,20 @@ export async function updateTradeRealtime(
   }
 }
 
+function tradePriceLevel(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Evaluate SL/TP using executable prices: close BUY at bid, close SELL at ask.
+ * (A single "mid" price misses real fill prices and can skip valid triggers.)
+ */
 export async function checkAndExecuteStopLossTakeProfit(
   tradeId: number,
-  currentPrice: number
+  bid: number,
+  ask: number
 ): Promise<{ executed: boolean; reason?: string }> {
   try {
     const trades = await query(
@@ -389,25 +483,35 @@ export async function checkAndExecuteStopLossTakeProfit(
     }
 
     const trade = trades[0] as any;
+    const side = String(trade.side || "").toUpperCase();
+    const sl = tradePriceLevel(trade.stop_loss);
+    const tp = tradePriceLevel(trade.take_profit);
 
-    if (trade.stop_loss) {
-      if (trade.side === "BUY" && currentPrice <= trade.stop_loss) {
-        const closeResult = await closeTrade(tradeId, currentPrice, "STOP_LOSS_HIT");
+    const bidPx = Number(bid);
+    const askPx = Number(ask);
+    const exitBuy = Number.isFinite(bidPx) && bidPx > 0 ? bidPx : 0;
+    const exitSell = Number.isFinite(askPx) && askPx > 0 ? askPx : exitBuy;
+
+    if (side === "BUY") {
+      const p = exitBuy;
+      if (!p) return { executed: false };
+      if (sl != null && p <= sl) {
+        const closeResult = await closeTrade(tradeId, p, "STOP_LOSS_HIT");
         return { executed: closeResult.success, reason: "STOP_LOSS_HIT" };
       }
-      if (trade.side === "SELL" && currentPrice >= trade.stop_loss) {
-        const closeResult = await closeTrade(tradeId, currentPrice, "STOP_LOSS_HIT");
-        return { executed: closeResult.success, reason: "STOP_LOSS_HIT" };
-      }
-    }
-
-    if (trade.take_profit) {
-      if (trade.side === "BUY" && currentPrice >= trade.take_profit) {
-        const closeResult = await closeTrade(tradeId, currentPrice, "TAKE_PROFIT_HIT");
+      if (tp != null && p >= tp) {
+        const closeResult = await closeTrade(tradeId, p, "TAKE_PROFIT_HIT");
         return { executed: closeResult.success, reason: "TAKE_PROFIT_HIT" };
       }
-      if (trade.side === "SELL" && currentPrice <= trade.take_profit) {
-        const closeResult = await closeTrade(tradeId, currentPrice, "TAKE_PROFIT_HIT");
+    } else if (side === "SELL") {
+      const p = exitSell;
+      if (!p) return { executed: false };
+      if (sl != null && p >= sl) {
+        const closeResult = await closeTrade(tradeId, p, "STOP_LOSS_HIT");
+        return { executed: closeResult.success, reason: "STOP_LOSS_HIT" };
+      }
+      if (tp != null && p <= tp) {
+        const closeResult = await closeTrade(tradeId, p, "TAKE_PROFIT_HIT");
         return { executed: closeResult.success, reason: "TAKE_PROFIT_HIT" };
       }
     }
@@ -418,13 +522,65 @@ export async function checkAndExecuteStopLossTakeProfit(
   }
 }
 
+/** Base URL for fxincapws HTTP quotes (`GET /quote/:symbol`), default port 4040. */
+export function getWsQuoteBaseUrl(): string {
+  return WS_QUOTE_BASE_URL;
+}
+
+/**
+ * Poll live quotes and close any open trades whose SL/TP is touched.
+ * Run on an interval from the API process (requires fxincapws reachable at WS_QUOTE_BASE_URL).
+ *
+ * Prices come from getServerQuote(), which reads the fxincapws envelope
+ * correctly. The previous implementation read `data.bid` from a payload shaped
+ * `{ success, quote: { bid, ask }, provider }`, so every symbol produced NaN and
+ * was skipped — server-side SL/TP never executed.
+ */
+export async function processAllStopLossTakeProfit(): Promise<{ checked: number; closed: number }> {
+  const rows = await query(
+    `SELECT id, symbol FROM trades
+     WHERE status = 'OPEN' AND (stop_loss IS NOT NULL OR take_profit IS NOT NULL)`
+  );
+  const list = Array.isArray(rows) ? rows : [];
+  if (list.length === 0) {
+    return { checked: 0, closed: 0 };
+  }
+
+  const bySymbol = new Map<string, number[]>();
+  for (const t of list) {
+    const row = t as any;
+    const sym = String(row.symbol || "").trim();
+    const id = Number(row.id);
+    if (!sym || !Number.isFinite(id)) continue;
+    if (!bySymbol.has(sym)) bySymbol.set(sym, []);
+    bySymbol.get(sym)!.push(id);
+  }
+
+  let checked = 0;
+  let closed = 0;
+
+  for (const [symbol, tradeIds] of bySymbol) {
+    const quote = await getServerQuote(symbol);
+    // No fresh server price: skip. Never fabricate a level that closes a trade.
+    if (!quote || !isFresh(quote)) continue;
+
+    for (const tradeId of tradeIds) {
+      checked += 1;
+      const r = await checkAndExecuteStopLossTakeProfit(tradeId, quote.bid, quote.ask);
+      if (r.executed) closed += 1;
+    }
+  }
+
+  return { checked, closed };
+}
+
 export async function autoCloseExpiredTrades(timeoutMinutes: number): Promise<number> {
   try {
     const safeTimeout = Number.isFinite(timeoutMinutes) && timeoutMinutes > 0 ? timeoutMinutes : 2;
     const timeoutSeconds = Math.floor(safeTimeout * 60);
 
     const rows = await query(
-      `SELECT id, current_price, entry_price
+      `SELECT id, symbol, side, current_price, entry_price
        FROM trades
        WHERE status = 'OPEN'
          AND EXTRACT(EPOCH FROM (NOW() - opened_at)) >= $1`,
@@ -439,8 +595,24 @@ export async function autoCloseExpiredTrades(timeoutMinutes: number): Promise<nu
     let closedCount = 0;
 
     for (const trade of expiredTrades as any[]) {
-      const closePrice = Number(trade.current_price ?? trade.entry_price);
-      if (!Number.isFinite(closePrice) || closePrice <= 0) {
+      // Settle at the live server price. Previously this fell back to
+      // `entry_price` when `current_price` was NULL, closing the position for
+      // exactly zero P&L — a fabricated settlement, not a market one.
+      const quote = await getServerQuote(String(trade.symbol || ""));
+      let closePrice: number | null = null;
+
+      if (quote && isFresh(quote)) {
+        closePrice = executablePrice(quote, String(trade.side || ""), "CLOSE");
+      } else {
+        // Fall back only to a server-maintained current_price, never to entry_price.
+        const stored = Number(trade.current_price);
+        if (Number.isFinite(stored) && stored > 0) closePrice = stored;
+      }
+
+      if (closePrice == null || !Number.isFinite(closePrice) || closePrice <= 0) {
+        console.warn(
+          `[TRADE] Auto-close skipped for trade ${trade.id} (${trade.symbol}): no server price available`
+        );
         continue;
       }
 
@@ -496,9 +668,14 @@ export async function getAvailableBalance(
   userId: string
 ): Promise<{ success: boolean; availableBalance?: number; error?: string }> {
   try {
+    const accountId = await resolveActiveAccountId(userId);
+    if (!accountId) {
+      return { success: false, error: "Account not found" };
+    }
+
     const results = await query(
-      `SELECT balance, locked_balance, available_balance FROM user_accounts WHERE user_id = $1`,
-      [userId]
+      `SELECT balance, locked_balance, available_balance FROM user_accounts WHERE id = $1`,
+      [accountId]
     );
 
     if (!Array.isArray(results) || results.length === 0) {
@@ -531,35 +708,34 @@ export async function getAccountInfo(
   error?: string;
 }> {
   try {
-    const accountResults = await query(
-      `SELECT balance, available_balance, locked_balance FROM user_accounts WHERE user_id = $1`,
-      [userId]
-    );
+    const accountId = await resolveActiveAccountId(userId);
+    if (!accountId) {
+      return { success: false, error: "Account not found" };
+    }
+
+    const [accountResults, tradeResults] = await Promise.all([
+      query(
+        `SELECT balance, available_balance, locked_balance FROM user_accounts WHERE id = $1`,
+        [accountId]
+      ),
+      query(
+        `SELECT COALESCE(SUM(final_pnl), 0) as total_pnl FROM trades WHERE user_id = $1 AND status = 'CLOSED'`,
+        [userId]
+      ),
+    ]);
 
     if (!Array.isArray(accountResults) || accountResults.length === 0) {
       return { success: false, error: "Account not found" };
     }
 
     const account = accountResults[0] as any;
-
-    const tradeResults = await query(
-      `SELECT COALESCE(SUM(final_pnl), 0) as total_pnl FROM trades WHERE user_id = $1 AND status = 'CLOSED'`,
-      [userId]
-    );
-
     const totalPnL = Number((tradeResults as any)[0]?.total_pnl) || 0;
     const balance = Number(account.balance) || 0;
     const lockedBalance = Number(account.locked_balance) || 0;
     const storedAvailable = Number(account.available_balance) || 0;
     const availableBalance = Math.max(0, Math.max(storedAvailable, balance - lockedBalance));
 
-    return {
-      success: true,
-      balance,
-      lockedBalance,
-      availableBalance,
-      totalPnL,
-    };
+    return { success: true, balance, lockedBalance, availableBalance, totalPnL };
   } catch (error) {
     return {
       success: false,

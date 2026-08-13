@@ -14,16 +14,24 @@ export const ServerSettings = () => {
   const [providerError, setProviderError] = useState('')
   const [providerEmptyHint, setProviderEmptyHint] = useState('')
 
-  // Build socket test URLs dynamically using API keys from the WS service
+  // Socket reachability targets.
+  //
+  // These URLs no longer carry API keys: the WS service redacts `api_key` from
+  // /admin/providers, so a provider credential never reaches this browser.
+  // The probe therefore only confirms the upstream endpoint is reachable, not
+  // that the key is valid — use the internal stream test and /health below,
+  // which exercise the real configured credential server-side.
   const socketTargets = useMemo(() => {
     const provMap = {}
     providers.forEach((p) => { provMap[p.provider] = p })
-    const tdKey = provMap.twelvedata?.api_key
-    const fhKey = provMap.finnhub?.api_key
     return [
-      { key: 'finnhub', name: 'Finnhub', url: fhKey ? `wss://ws.finnhub.io?token=${fhKey}` : 'wss://ws.finnhub.io', enabled: provMap.finnhub?.enabled },
-      { key: 'twelvedata', name: 'TwelveData', url: tdKey ? `wss://ws.twelvedata.com/v1/quotes/price?apikey=${tdKey}` : 'wss://ws.twelvedata.com/v1/quotes/price', enabled: provMap.twelvedata?.enabled },
+      { key: 'finnhub', name: 'Finnhub', url: 'wss://ws.finnhub.io', enabled: provMap.finnhub?.enabled },
+      { key: 'twelvedata', name: 'TwelveData', url: 'wss://ws.twelvedata.com/v1/quotes/price', enabled: provMap.twelvedata?.enabled },
       { key: 'binance', name: 'Binance', url: 'wss://stream.binance.com:9443/ws', enabled: provMap.binance?.enabled },
+      // Infoway rejects the upgrade with 401 unless ?apikey= is present, so this
+      // probe reports reachability only — as it now does for every provider,
+      // since keys are no longer sent to the browser.
+      { key: 'infoway', name: 'Infoway', url: 'wss://data.infoway.io/ws?business=common', enabled: provMap.infoway?.enabled },
     ]
   }, [providers])
 
@@ -114,6 +122,18 @@ export const ServerSettings = () => {
   }
 
   const testSocketEndpoint = useCallback((target) => {
+    const needsKey = target.key !== 'binance'
+    const hasKeyInUrl =
+      (target.url && (target.url.includes('token=') || target.url.includes('apikey='))) || false
+    if (needsKey && !hasKeyInUrl) {
+      return Promise.resolve({
+        status: 'skipped',
+        latencyMs: null,
+        checkedAt: new Date().toISOString(),
+        message: 'No API key in URL — set the key in WS Provider Settings above, then Reload',
+      })
+    }
+
     return new Promise((resolve) => {
       const startedAt = Date.now()
       let settled = false
@@ -212,12 +232,21 @@ export const ServerSettings = () => {
         setProviders(list)
         if (list.length === 0) {
           setProviderEmptyHint(
-            'WS returned no provider rows. Usually the WS service DB env (PGHOST/PGPASSWORD) does not match fxincapapi, or ws_api_keys was never seeded — check fxincap-ws logs and Postgres.'
+            'WS returned no provider rows. On the WS host: align PGHOST, PGUSER, PGPASSWORD, PGDATABASE with fxincapapi; restart fxincap-ws; or run fxincapws/sql/seed_ws_api_keys.sql on that database. Check fxincap-ws logs for "ws_api_keys has zero rows".'
           )
         }
       } else {
         setProviders([])
-        setProviderEmptyHint(json?.error || `WS providers request failed (${res.status})`)
+        const err = json?.error || `WS providers request failed (${res.status})`
+        if (res.status === 401) {
+          setProviderEmptyHint(
+            `${err} Set WS_ADMIN_TOKEN on the admin server to match ADMIN_TOKEN on fxincap-ws.`
+          )
+        } else if (res.status === 503) {
+          setProviderEmptyHint(`${err} Fix PostgreSQL credentials / network for fxincap-ws.`)
+        } else {
+          setProviderEmptyHint(err)
+        }
       }
     } catch {
       setProviders([])
@@ -609,14 +638,14 @@ export const ServerSettings = () => {
                         </span>
                       </div>
                       <button
-                        onClick={() => { setEditingProv({ name: p.provider, api_key: p.api_key || '', enabled: !!p.enabled }); setProviderError('') }}
+                        onClick={() => { setEditingProv({ name: p.provider, api_key: '', enabled: !!p.enabled }); setProviderError('') }}
                         className="rounded bg-slate-700 px-2 py-0.5 text-xs text-slate-300 hover:bg-slate-600"
                       >
                         Edit
                       </button>
                     </div>
                     <p className="mt-1 text-xs text-slate-500">
-                      Key: {p.api_key ? `****${String(p.api_key).slice(-6)}` : <span className="text-rose-400">Not set</span>}
+                      Key: {p.has_api_key ? (p.api_key_hint || 'Set') : <span className="text-rose-400">Not set</span>}
                     </p>
                   </div>
                 ))}
@@ -628,11 +657,16 @@ export const ServerSettings = () => {
                   <div>
                     <label className="mb-1 block text-xs text-slate-300">API Key</label>
                     <input
+                      type="password"
+                      autoComplete="new-password"
                       value={editingProv.api_key}
                       onChange={(e) => setEditingProv((prev) => ({ ...prev, api_key: e.target.value }))}
-                      placeholder="Enter API key..."
+                      placeholder="Leave blank to keep the existing key"
                       className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
                     />
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Existing keys are never sent to the browser. Leave blank to keep the stored key unchanged.
+                    </p>
                   </div>
                   <label className="flex items-center gap-2 text-xs text-slate-300">
                     <input
@@ -771,7 +805,9 @@ export const ServerSettings = () => {
                           ? 'text-emerald-300'
                           : status === 'pending'
                             ? 'text-amber-300'
-                            : 'text-rose-300'
+                            : status === 'skipped'
+                              ? 'text-slate-400'
+                              : 'text-rose-300'
                       return (
                         <tr key={target.key} className="border-b border-slate-800/80 align-top">
                           <td className="py-2 pr-4 font-medium">{target.name}</td>

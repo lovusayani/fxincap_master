@@ -7,6 +7,7 @@ import BottomTabs from "@/components/trading/BottomTabs";
 import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from "lucide-react";
 import { useMarketStream } from "@/hooks/useMarketStream";
 import { useToast } from "@/hooks/use-toast";
+import { apiUrl } from "@/lib/api";
 import { calculateRequiredMargin } from "@/lib/trading";
 
 interface AccountBalance {
@@ -27,7 +28,7 @@ function useAccountBalance(refreshKey: number): AccountBalance | null {
 
         const fetch_ = async () => {
             try {
-                const res = await fetch("/api/user/balance", {
+                const res = await fetch(apiUrl("/api/user/balance"), {
                     headers: { Authorization: `Bearer ${token}` },
                 });
                 if (res.ok) {
@@ -119,6 +120,15 @@ export default function Terminal() {
         const requiredMargin = calculateRequiredMargin(selectedSymbol, lot, orderPrice, leverage);
         const availableFreeMargin = Number(accountBal?.freeMargin ?? 0);
 
+        if (availableFreeMargin <= 0) {
+            toast({
+                title: "No free margin",
+                description:
+                    "Your free margin is zero or negative. Close positions or cancel pending orders before placing new trades.",
+            });
+            return;
+        }
+
         if (requiredMargin > availableFreeMargin) {
             toast({
                 title: "Insufficient margin",
@@ -130,7 +140,7 @@ export default function Terminal() {
         setSubmitting(true);
 
         try {
-            const res = await fetch(isPendingOrder ? "/api/orders" : "/api/trades/open", {
+            const res = await fetch(isPendingOrder ? apiUrl("/api/orders") : apiUrl("/api/trades/open"), {
                 method: "POST",
                 headers: authHeaders(),
                 body: JSON.stringify({
@@ -260,6 +270,7 @@ export default function Terminal() {
                                 handleBuyOrder={handleBuyOrder}
                                 handleSellOrder={handleSellOrder}
                                 submitting={submitting}
+                                freeMargin={Number(accountBal?.freeMargin ?? 0)}
                             />
                         </div>
                     )}
@@ -373,6 +384,7 @@ export default function Terminal() {
                             handleBuyOrder={handleBuyOrder}
                             handleSellOrder={handleSellOrder}
                             submitting={submitting}
+                            freeMargin={Number(accountBal?.freeMargin ?? 0)}
                         />
                     </div>
                 </div>
@@ -506,6 +518,7 @@ export default function Terminal() {
                                         handleBuyOrder={handleBuyOrder}
                                         handleSellOrder={handleSellOrder}
                                         submitting={submitting}
+                                        freeMargin={Number(accountBal?.freeMargin ?? 0)}
                                     />
                                 </div>
                             )}
@@ -557,8 +570,10 @@ function DesktopOrderTicket({
     handleBuyOrder,
     handleSellOrder,
     submitting,
+    freeMargin = 0,
 }: any) {
     const hasBid = currentSymbol.bid > 0;
+    const noFreeMargin = freeMargin <= 0;
     return (
         <div className="p-4 space-y-4">
             <div className="border border-white/10 rounded-lg p-3 bg-white/5">
@@ -637,17 +652,23 @@ function DesktopOrderTicket({
                 </div>
             </div>
 
+            {noFreeMargin && (
+                <p className="text-xs text-red-400 rounded border border-red-500/30 bg-red-500/10 px-2 py-2">
+                    No free margin — close positions or cancel pending orders before opening new trades.
+                </p>
+            )}
+
             <div className="flex gap-2 pt-4 border-t border-gray-700">
                 <Button
                     onClick={handleBuyOrder}
-                    disabled={submitting}
+                    disabled={submitting || noFreeMargin}
                     className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-6 rounded disabled:opacity-60"
                 >
                     {submitting ? "..." : "BUY"}
                 </Button>
                 <Button
                     onClick={handleSellOrder}
-                    disabled={submitting}
+                    disabled={submitting || noFreeMargin}
                     className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-6 rounded disabled:opacity-60"
                 >
                     {submitting ? "..." : "SELL"}
@@ -657,7 +678,25 @@ function DesktopOrderTicket({
     );
 }
 
-function MobileOrderTicket({ orderType, setOrderType, pendingPrice, setPendingPrice, lot, setLot, leverage, setLeverage, sl, setSl, tp, setTp, handleBuyOrder, handleSellOrder, submitting }: any) {
+function MobileOrderTicket({
+    orderType,
+    setOrderType,
+    pendingPrice,
+    setPendingPrice,
+    lot,
+    setLot,
+    leverage,
+    setLeverage,
+    sl,
+    setSl,
+    tp,
+    setTp,
+    handleBuyOrder,
+    handleSellOrder,
+    submitting,
+    freeMargin = 0,
+}: any) {
+    const noFreeMargin = freeMargin <= 0;
     return (
         <div className="space-y-2">
             <div className="flex gap-2">
@@ -703,9 +742,12 @@ function MobileOrderTicket({ orderType, setOrderType, pendingPrice, setPendingPr
                 <input type="number" placeholder="TP" value={tp} onChange={(e) => setTp(e.target.value)} className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white text-xs" />
             </div>
 
+            {noFreeMargin && (
+                <p className="text-[10px] text-red-400 px-1">No free margin — close positions or cancel orders first.</p>
+            )}
             <div className="grid grid-cols-2 gap-2">
-                <Button onClick={handleBuyOrder} disabled={submitting} className="bg-green-600 hover:bg-green-700 text-white text-xs py-1.5 disabled:opacity-60">{submitting ? "..." : "BUY"}</Button>
-                <Button onClick={handleSellOrder} disabled={submitting} className="bg-red-600 hover:bg-red-700 text-white text-xs py-1.5 disabled:opacity-60">{submitting ? "..." : "SELL"}</Button>
+                <Button onClick={handleBuyOrder} disabled={submitting || noFreeMargin} className="bg-green-600 hover:bg-green-700 text-white text-xs py-1.5 disabled:opacity-60">{submitting ? "..." : "BUY"}</Button>
+                <Button onClick={handleSellOrder} disabled={submitting || noFreeMargin} className="bg-red-600 hover:bg-red-700 text-white text-xs py-1.5 disabled:opacity-60">{submitting ? "..." : "SELL"}</Button>
             </div>
         </div>
     );

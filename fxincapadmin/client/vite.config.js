@@ -7,7 +7,7 @@ const srcPath = fileURLToPath(new URL('./src', import.meta.url))
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
 
-  const apiBaseTarget = env.ADMIN_LOCAL_API_URL || 'http://127.0.0.1:6000'
+  const apiBaseTarget = env.ADMIN_LOCAL_API_URL || 'http://127.0.0.1:7000'
   const adminApiTarget = env.ADMIN_API_URL || apiBaseTarget
   const wsTarget = env.WS_SERVICE_URL || 'http://127.0.0.1:4040'
   const adminApiToken = env.ADMIN_API_TOKEN || ''
@@ -34,7 +34,21 @@ export default defineConfig(({ mode }) => {
           rewrite: (path) => path.replace(/^\/api\/ws-admin/, ''),
           configure: (proxy) => {
             proxy.on('proxyReq', (proxyReq) => {
-              proxyReq.setHeader('x-admin-token', wsAdminToken)
+              proxyReq.setHeader('x-admin-token', String(wsAdminToken).trim())
+            })
+            proxy.on('error', (err, _req, res) => {
+              if (!res || res.headersSent) return
+              const msg = err?.code === 'ECONNREFUSED'
+                ? `Nothing listening at ${wsTarget}. Start fxincap-ws: cd fxincapws && pnpm dev`
+                : (err?.message || String(err))
+              res.writeHead(503, { 'Content-Type': 'application/json' })
+              res.end(
+                JSON.stringify({
+                  success: false,
+                  error: msg,
+                  providers: [],
+                })
+              )
             })
           }
         },

@@ -174,7 +174,9 @@ export const Header = ({ sidebarExpanded, onToggleSidebar, onOpenSettings }) => 
   const navigate = useNavigate()
   const { user, logout } = useAuth()
   const [showDropdown, setShowDropdown] = useState(false)
+  const [showReminders, setShowReminders] = useState(false)
   const dropdownRef = useRef(null)
+  const remindersRef = useRef(null)
 
   const userInitial = user?.firstName?.charAt(0) || user?.email?.charAt(0) || 'A'
 
@@ -183,6 +185,9 @@ export const Header = ({ sidebarExpanded, onToggleSidebar, onOpenSettings }) => 
     const handleClickOutside = (e) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
         setShowDropdown(false)
+      }
+      if (remindersRef.current && !remindersRef.current.contains(e.target)) {
+        setShowReminders(false)
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
@@ -224,7 +229,21 @@ export const Header = ({ sidebarExpanded, onToggleSidebar, onOpenSettings }) => 
       </HeaderLeft>
       <HeaderRight>
         <IconButton onClick={handleFullscreen} title="Fullscreen">fullscreen</IconButton>
-        <IconButton title="Notifications">notifications</IconButton>
+        <div style={{ position: 'relative' }} ref={remindersRef}>
+          <IconButton onClick={() => setShowReminders(!showReminders)} title="Reminders">notifications</IconButton>
+          {showReminders && (
+            <DropdownMenu>
+              <DropdownItem onClick={() => setShowReminders(false)}>
+                <span style={{ fontFamily: 'Material Symbols Outlined' }}>note</span>
+                Quick Note
+              </DropdownItem>
+              <DropdownItem onClick={() => setShowReminders(false)}>
+                <span style={{ fontFamily: 'Material Symbols Outlined' }}>tune</span>
+                Alert Settings
+              </DropdownItem>
+            </DropdownMenu>
+          )}
+        </div>
         <div style={{ position: 'relative' }} ref={dropdownRef}>
           <UserAvatar onClick={() => setShowDropdown(!showDropdown)} title="User Profile">
             {userInitial}

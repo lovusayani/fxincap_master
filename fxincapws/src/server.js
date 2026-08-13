@@ -1,17 +1,22 @@
 import express from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
 import { WebSocketServer } from 'ws';
 import { PORT, ADMIN_TOKEN, FINNHUB_WEBHOOK_SECRET } from './config.js';
 import { initSettingsTable, getSettings, updateSettings, getAllProviders, getProviderByName, updateProvider, getProviderFailoverChain } from './db.js';
 import { FinnhubProvider } from './providers/finnhub.js';
 import { BinanceProvider } from './providers/binance.js';
 import { TwelvedataProvider } from './providers/twelvedata.js';
+import { InfowayProvider } from './providers/infoway.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const SUPPORTED_RUNTIME_PROVIDERS = new Set(['finnhub', 'twelvedata']);
+const SUPPORTED_RUNTIME_PROVIDERS = new Set(['finnhub', 'twelvedata', 'infoway']);
+
+/** Providers accepted by the admin configuration endpoints. */
+const CONFIGURABLE_PROVIDERS = ['finnhub', 'binance', 'twelvedata', 'infoway'];
 
 let provider = null;
 let providerChain = [];
@@ -58,6 +63,9 @@ function createProviderInstance(candidate) {
   }
   if (candidate.provider === 'twelvedata') {
     return new TwelvedataProvider(candidate.api_key, options);
+  }
+  if (candidate.provider === 'infoway') {
+    return new InfowayProvider(candidate.api_key, options);
   }
   return new BinanceProvider(candidate.api_key);
 }
@@ -249,18 +257,16 @@ async function getQuoteWithFailover(symbol) {
     if (!loaded) return null;
   }
 
-  const attempted = new Set();
-  while (provider && !attempted.has(currentSettings.provider)) {
-    attempted.add(currentSettings.provider);
-    try {
-      const quote = await provider.getQuote(symbol);
-      if (quote) return quote;
-    } catch (error) {
-      providerLoadError = normalizeErrorMessage(error);
-    }
-
-    const switched = await activateNextProvider(`Quote unavailable for ${symbol}`, attempted);
-    if (!switched) break;
+  // A single quote miss (quota limit, unsupported symbol, etc.) must not tear down
+  // the shared streaming provider — that would drop live ticks for every other
+  // subscriber. Real connectivity failures already trigger failover via each
+  // provider's own onFailure hook (see createProviderInstance).
+  try {
+    const quote = await provider.getQuote(symbol);
+    if (quote) return quote;
+    providerLoadError = `Quote unavailable for ${symbol}`;
+  } catch (error) {
+    providerLoadError = normalizeErrorMessage(error);
   }
 
   return null;
@@ -315,31 +321,88 @@ app.post('/webhook/finnhub', (req, res) => {
   } catch {}
 });
 
+/**
+ * Constant-time admin token check.
+ * Returns true when the request carries the correct token.
+ */
+function isAdminAuthorized(req) {
+  const rawToken = req.headers['x-admin-token'] || req.query.token;
+  const token = rawToken != null ? String(rawToken).trim() : '';
+  if (!token || !ADMIN_TOKEN) return false;
+  const a = Buffer.from(token, 'utf8');
+  const b = Buffer.from(ADMIN_TOKEN, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Strip provider secrets before they leave the service.
+ *
+ * `api_key` was previously returned in full to the admin browser so the UI could
+ * build `wss://…?apikey=…` test URLs. A credential that reaches a browser is a
+ * credential that reaches browser history, extensions and any XSS.
+ * Callers get only whether a key is set and a short non-reversible hint.
+ */
+function redactProvider(row) {
+  const { api_key, ...rest } = row || {};
+  const key = api_key == null ? '' : String(api_key);
+  return {
+    ...rest,
+    has_api_key: key.length > 0,
+    api_key_hint: key.length > 0 ? `••••${key.slice(-4)}` : null,
+  };
+}
+
 // Admin endpoints
 app.get('/admin/providers', async (req, res) => {
-  const token = req.headers['x-admin-token'] || req.query.token;
-  if (token !== ADMIN_TOKEN) return res.status(401).json({ success: false, error: 'Unauthorized' });
+  if (!isAdminAuthorized(req)) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized — ADMIN_TOKEN in fxincap-ws/.env must match WS_ADMIN_TOKEN in fxincapadmin/client/.env (Vite proxy)',
+    });
+  }
   try {
-    const providers = await getAllProviders();
+    const providers = (await getAllProviders()).map(redactProvider);
     res.json({ success: true, providers });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    const msg = e?.message || 'Database error';
+    console.error('[fxincap-ws] GET /admin/providers:', msg);
+    // 200 + success:false so the admin UI always gets JSON (some proxies turn 5xx into opaque 500 HTML)
+    res.status(200).json({ success: false, error: msg, providers: [] });
   }
 });
 
 app.post('/admin/providers/:provider', async (req, res) => {
-  const token = req.headers['x-admin-token'] || req.query.token;
-  if (token !== ADMIN_TOKEN) return res.status(401).json({ success: false, error: 'Unauthorized' });
+  if (!isAdminAuthorized(req)) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized — ADMIN_TOKEN on fxincap-ws must match WS_ADMIN_TOKEN on the admin server',
+    });
+  }
 
   const { provider: p } = req.params;
-  const { api_key, enabled } = req.body || {};
+  const { api_key, enabled, clear_api_key } = req.body || {};
 
-  if (!['finnhub', 'binance', 'twelvedata'].includes(p)) {
+  if (!CONFIGURABLE_PROVIDERS.includes(p)) {
     return res.status(400).json({ success: false, error: 'Invalid provider' });
   }
 
   try {
-    const success = await updateProvider({ provider: p, api_key: api_key || '', enabled: enabled === true });
+    // The admin UI no longer receives existing keys, so it cannot echo one back.
+    // An absent/empty api_key therefore means "leave the stored key unchanged";
+    // clearing requires the explicit clear_api_key flag. Without this, saving an
+    // enable/disable toggle would silently wipe the provider credential.
+    let nextKey;
+    if (clear_api_key === true) {
+      nextKey = '';
+    } else if (typeof api_key === 'string' && api_key.trim() !== '') {
+      nextKey = api_key.trim();
+    } else {
+      const existing = await getProviderByName(p);
+      nextKey = existing?.api_key || '';
+    }
+
+    const success = await updateProvider({ provider: p, api_key: nextKey, enabled: enabled === true });
     if (!success) {
       return res.status(500).json({ success: false, error: 'Database update failed' });
     }
@@ -347,23 +410,35 @@ app.post('/admin/providers/:provider', async (req, res) => {
     await loadProvider(enabled === true ? p : currentSettings.provider);
 
     const updated = await getProviderByName(p);
-    res.json({ success: true, provider: updated });
+    res.json({ success: true, provider: updated ? redactProvider(updated) : null });
   } catch (e) {
     console.error('[fxincap-ws] admin provider update error:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
+// Previously unauthenticated AND returned the active provider's API key in
+// cleartext, unlike its three sibling /admin routes. Now gated and redacted.
 app.get('/admin/settings', async (req, res) => {
+  if (!isAdminAuthorized(req)) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
   const settings = await getSettings();
-  res.json({ success: true, settings });
+  const key = settings?.api_key == null ? '' : String(settings.api_key);
+  res.json({
+    success: true,
+    settings: {
+      provider: settings?.provider ?? null,
+      has_api_key: key.length > 0,
+      api_key_hint: key.length > 0 ? `••••${key.slice(-4)}` : null,
+    },
+  });
 });
 
 app.post('/admin/settings', async (req, res) => {
-  const token = req.headers['x-admin-token'] || req.query.token;
-  if (token !== ADMIN_TOKEN) return res.status(401).json({ success: false, error: 'Unauthorized' });
+  if (!isAdminAuthorized(req)) return res.status(401).json({ success: false, error: 'Unauthorized' });
   const { provider: p, api_key } = req.body || {};
-  if (!['finnhub', 'binance', 'twelvedata'].includes(p)) return res.status(400).json({ success: false, error: 'Invalid provider' });
+  if (!CONFIGURABLE_PROVIDERS.includes(p)) return res.status(400).json({ success: false, error: 'Invalid provider' });
   try {
     await updateSettings({ provider: p, api_key: api_key || '' });
     await loadProvider(p);
