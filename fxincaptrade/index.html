@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -17,7 +17,8 @@
     <script>
       try {
         const theme = localStorage.getItem('theme') || 'dark';
-        if (theme === 'dark') document.documentElement.classList.add('dark');
+        document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
+        document.documentElement.classList.toggle('dark', theme !== 'light');
       } catch {}
       window.addEventListener('error', (e) => {
         const el = document.getElementById('runtime-error') || document.createElement('pre');
