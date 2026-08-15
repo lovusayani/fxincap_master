@@ -61,7 +61,16 @@ Details: [SECURITY.md](./SECURITY.md), [PNL_ENGINE.md](./PNL_ENGINE.md),
 | Tests | `fxincapws/src/providers/infoway.test.js` |
 | Registered in | provider factory, `SUPPORTED_RUNTIME_PROVIDERS`, `CONFIGURABLE_PROVIDERS`, failover order, boot seed, `sql/seed_ws_api_keys.sql` |
 | Admin panel | appears automatically (the provider table is data-driven); key editable under Server Settings → Providers |
-| Enabled? | **No** — seeded `enabled = FALSE` |
+| Enabled? | **Yes, in production** — see the status note below |
+
+> **Status correction (2026-08-15).** This section previously read "seeded
+> `enabled = FALSE`". That is no longer true. Infoway is **live in production**
+> and is the active provider (`/health` reports `"provider":"infoway"`,
+> `"provider_status":"ready"`, with `common` and `crypto` sockets connected).
+> TwelveData is now the fallback, not the active feed. §9's warning about not
+> enabling Infoway is therefore historical — it has already happened.
+>
+> It is serving prices, but **rate-limiting is degrading it**: see §6a.
 
 **REST** — `GET {base}/{business}/batch_depth/{codes}` (bid/ask) and `/batch_trade/{codes}`
 (last). Auth via the **`apiKey` request header**.
@@ -126,6 +135,42 @@ Two details the official documentation does not specify. Neither was invented:
 Also known: 60 requests/min per WS connection, 60 s idle disconnect, 100 codes per REST
 request, one connection per asset class.
 
+Symbol codes are now **confirmed working** against the live key — `common/EURUSD`,
+`common/GBPUSD` and `crypto/BTCUSDT` all return `ret:200` with bid/ask depth. Item 2
+above is resolved; no `INFOWAY_SYMBOL_MAP` is needed.
+
+## 6a. Open production issue: REST rate-limiting
+
+Quotes intermittently return `{"success":false,"error":"Quote unavailable for …"}`.
+The cause is **not** bad symbol codes — Infoway returns valid data for every symbol
+tested. It is the 60 requests/minute limit being exceeded.
+
+The path that does it:
+
+- `fxincapapi` values positions by polling `GET {WS_QUOTE_BASE_URL}/quote/{symbol}`
+  over HTTP, one request per symbol (`market-price.ts`, `price-sync.ts`). It never
+  subscribes to the stream.
+- `InfowayProvider.getQuote()` serves the streamed cache only while it is under
+  10 s old. Otherwise it falls back to REST — `batch_depth`, then `batch_trade`.
+- With `PRICE_SYNC_POLL_MS=5000` and a 10 s cache, roughly every second poll of
+  every symbol becomes 2 REST calls.
+
+Observed: 37 `Too Many Requests` errors in one log window, across `XAUUSD`, `XAGUSD`,
+`USDJPY`, `GBPUSD`, `EURUSD`, `BTCUSDT`, `ETHUSDT` — i.e. every symbol, including the
+ones that appear to work. A symbol "works" or not depending on whether its last REST
+call happened to land inside the budget.
+
+Directions worth considering (none applied — this is the live trading price path and
+needs a deliberate decision):
+
+1. Have the price path **subscribe** to the stream rather than poll `/quote/`, so the
+   WS cache stays warm and REST becomes the exception it was designed to be.
+2. Batch REST lookups — the endpoint accepts up to 100 codes per request, but
+   `getQuote` fetches one symbol at a time.
+3. Raise the cache window above the poll interval so a poll cannot outrun the cache.
+4. Skip the `batch_trade` call when `batch_depth` already yields bid/ask; it halves
+   request volume and `last` is only cosmetic for settlement.
+
 ## 7. Current task — next development step
 
 **Test Infoway locally against the real Infoway API and the live SQL database.**
@@ -186,9 +231,19 @@ Note **fxincapws does not support `DATABASE_URL`** — it needs discrete `PG*`/`
 
 Full reference: [ENVIRONMENT.md](./ENVIRONMENT.md).
 
-> ⚠ **An Infoway API key is currently sitting in an untracked file `imp` at the
-> repository root.** It is not gitignored, so `git add -A` would commit it. Move it into
-> `fxincapws/.env` and delete the file.
+> ⚠ **The `imp` API key situation got worse before it got better.** The file was not
+> merely untracked — it was **committed** in `5c794d9` and reached `main`. This branch
+> untracks it and gitignores it, but the key remains recoverable from git history.
+>
+> The same key was additionally being served **unauthenticated over the public
+> internet** from `GET /admin/settings` on `ws.ncapfx.com`, which had no token check
+> (its three sibling `/admin` routes did). An nginx `location ~* ^/admin/settings
+> { deny all; }` rule now blocks it; the application-level fix is commit `7ce4276`.
+>
+> **The key must be rotated.** Neither the untracking nor the nginx rule un-leaks what
+> was already exposed. Rotate in the Infoway dashboard, then update it via
+> Admin → Server Settings → Providers (the authoritative value lives in `ws_api_keys`,
+> not a file).
 
 ## 9. Live database testing
 
@@ -203,9 +258,9 @@ Your local IP must be in the DigitalOcean **trusted sources** list or connection
 **`ws_api_keys` is shared with production.** Two consequences:
 
 1. **Booting this branch against the live database inserts an `infoway` row**
-   (`initSettingsTable()` seeds providers on every boot). Benign — `enabled=false`, empty
-   key, and the deployed code filters `infoway` out of its supported set entirely — but
-   it *is* a write to production data.
+   (`initSettingsTable()` seeds providers on every boot). This was written when the row
+   was benign (`enabled=false`, empty key). **That is no longer the case** — the row now
+   exists, is enabled, and carries a live key. See the §3 status correction.
 2. **Never set `enabled = true` for Infoway there.** `updateProvider()` runs
    `UPDATE ws_api_keys SET enabled = FALSE WHERE provider <> 'infoway'` in the same
    transaction, disabling TwelveData **for production**. Deployed code doesn't recognise
