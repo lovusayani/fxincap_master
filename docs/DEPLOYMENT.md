@@ -72,27 +72,41 @@ deleted, so it survives.
 
 ## 4. Domains
 
-| Domain | Serves | Evidence |
+**Live domains — verified 2026-08-15** against nginx `sites-enabled` and live HTTP checks:
+
+| Domain | Serves | Port |
 | --- | --- | --- |
-| `fxincap.com` | marketing site + `/hooks/deploy` | `.deploy.env.example`, `DEPLOYMENT.md` |
-| `api.fxincap.com` | fxincapapi | `.deploy.env.example` `VITE_API_URL` |
-| `trade.fxincap.com` | fxincaptrade | `fxincaptrade/.env.production.example` |
-| `admin.fxincap.com` | fxincapadmin | `fxincapapi/.env.example` `VERIFICATION_URL` |
-| `ws.fxincap.com` | fxincapws | admin server `WS_SERVICE_URL` default |
+| `ncapfx.com` | marketing site (fxincap) + `/hooks/deploy` | 4000, 9010 |
+| `api.ncapfx.com` | fxincapapi | 7000 |
+| `trade.ncapfx.com` | fxincaptrade | 3000 |
+| `admin.ncapfx.com` | fxincapadmin | 5001 |
+| `ws.ncapfx.com` | fxincapws | 4040 |
+
+The `*.fxincap.com` domains are **retired** — `api.fxincap.com` no longer resolves, and
+`fxincap.com/hooks/deploy` returns 405 because only `ncapfx.com.conf` carries the webhook proxy.
+Point the GitHub webhook at `https://ncapfx.com/hooks/deploy`.
+
+`ws.ncapfx.com` additionally denies `~* ^/admin/settings` at nginx as defense-in-depth; the
+application-level authorization for that route landed in `7ce4276`.
 
 **Legacy `suimfx.world` domains** still appear as code defaults and in log-cleanup scripts:
 `api.suimfx.world` (⚠ the admin server's `ADMIN_API_URL` default), `trade.suimfx.world`,
 `dashboard.suimfx.world`, `admin.suimfx.world`, `terminal.suimfx.world`.
 `TODO: verify on production server` whether any still resolve.
 
-**Two deployment layouts appear in the repository:**
+**Deployment layout — verified 2026-08-15.**
 
-- `/var/www/...` — `server-setup.sh`, `DEPLOYMENT.md` examples (the portable/monorepo layout)
-- `/home/<user>/htdocs/<domain>` — per-service `ecosystem.config.cjs` files, `script.sh` log cleaners
-  (a CloudPanel-style per-site layout)
+Production runs the monorepo layout from **`/var/www/fxincap-production/`**. Confirmed from
+`pm2 jlist`: every `fxincap-*` process reports a `pm_cwd` under that path.
 
-`TODO: verify on production server` which layout is live. The per-service ecosystem files are kept
-for that reason.
+The `/home/<user>/htdocs/<domain>` CloudPanel-style layout is **not in use**. The per-service
+`ecosystem.config.cjs` files that described it have been deleted, resolving the action item in
+[ADR-0003](./ADR/0003-production-deployment.md). They were referenced by no script in the deploy
+path and pointed at directories that do not exist on the server.
+
+Staging is likewise gone: there is no `/var/www/fxincap-staging` directory and no staging PM2
+process, so `ecosystem.staging.portable.cjs`, `run-staging.sh` and `install-staging.sh` have been
+deleted. Recover them from git history if staging is ever reinstated.
 
 ## 5. Server-side configuration
 

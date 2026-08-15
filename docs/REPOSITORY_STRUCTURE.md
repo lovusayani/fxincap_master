@@ -9,7 +9,6 @@ fxincap_master/
 │   ├── src/components/         sections/ (9 landing sections) + ui/
 │   ├── src/visual-edits/       visual editing tooling
 │   ├── next.config.ts          ⚠ typescript.ignoreBuildErrors: true
-│   └── ecosystem.config.js
 │
 ├── fxincapadmin/               Admin back-office                            :5001
 │   ├── client/                 Vite + React 18 SPA
@@ -19,7 +18,6 @@ fxincap_master/
 │   │   └── vite.config.js      dev proxy mirroring the server proxy
 │   ├── server/src/index.js     Express: serves client/dist + 4 credential-injecting proxies
 │   ├── pnpm-workspace.yaml     workspace: client + server
-│   └── ecosystem.config.cjs
 │
 ├── fxincapapi/                 ★ REST API · trading engine · P&L            :7000
 │   ├── src/index.ts            app bootstrap, route mounting, 2 background workers
@@ -33,7 +31,6 @@ fxincap_master/
 │   │   └── *-settings.ts       adm_settings-backed config (trade, email, smtp)
 │   ├── migrations/             3 PostgreSQL migrations + 2 MySQL-era files
 │   ├── uploads/                runtime user uploads — gitignored (.gitkeep only)
-│   └── ecosystem.config.cjs
 │
 ├── fxincaptrade/               Trading client SPA + thin Express host       :3000
 │   ├── client/
@@ -45,7 +42,6 @@ fxincap_master/
 │   ├── server/                 legacy Express routes — non-functional, see ARCHITECTURE §3
 │   ├── shared/                 database.ts, api.ts (shared types)
 │   ├── deploy/                 nginx-trade.example.conf
-│   └── ecosystem.config.cjs
 │
 ├── fxincapws/                  ★ Market data aggregation                    :4040
 │   ├── src/server.js           provider selection, failover, /stream, /quote, /admin, /health
@@ -53,7 +49,6 @@ fxincap_master/
 │   ├── src/config.js           ⚠ hard-coded DB fallbacks
 │   ├── src/providers/          finnhub.js · twelvedata.js · twelvedata-ws.js · binance.js (stub)
 │   ├── sql/seed_ws_api_keys.sql
-│   └── ecosystem.config.cjs
 │
 ├── deploy/webhook-server.cjs   GitHub push webhook → deploy-prod.sh         :9010
 ├── docs/                       this documentation set
@@ -62,8 +57,7 @@ fxincap_master/
 ├── deploy-prod.sh              fetch + reset + install + run     ← the live deploy chain
 ├── install-prod.sh             pnpm install --frozen-lockfile + build ×5
 ├── run-prod.sh                 pm2 delete + start ×5 + webhook
-├── install-staging.sh / run-staging.sh
-├── ecosystem.production.portable.cjs / ecosystem.staging.portable.cjs
+├── ecosystem.production.portable.cjs   # declarative port/process reference (not in deploy path)
 ├── setup-server-deploy-env.sh  one-time .deploy.env bootstrap (server)
 ├── server-setup.sh             one-time provisioning reference
 ├── deploy-remote.ps1           legacy push+ssh deploy (source of the fc<timestamp> commits)
@@ -118,7 +112,7 @@ Extended during this audit. Additions:
 Deliberately **not** ignored, because production needs them tracked:
 
 ```
-ecosystem*.cjs        deploy-prod.sh    install-prod.sh    run-prod.sh
+ecosystem.production.portable.cjs   deploy-prod.sh    install-prod.sh    run-prod.sh
 deploy/               .deploy.env.example    *.example
 fxincapapi/migrations/*.sql             fxincapws/sql/*.sql
 ```
