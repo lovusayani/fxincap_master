@@ -12,7 +12,7 @@ function generateVerificationCode(): string {
 }
 
 function buildActivationLink(email: string, code: string): string {
-  const appUrl = String(process.env.TRADE_APP_URL || process.env.VITE_APP_URL || 'https://trade.fxincap.com').replace(/\/$/, '');
+  const appUrl = String(process.env.TRADE_APP_URL || process.env.VITE_APP_URL || 'https://trade.ncapfx.com').replace(/\/$/, '');
   return `${appUrl}/?step=verify&email=${encodeURIComponent(email)}&code=${encodeURIComponent(code)}`;
 }
 

@@ -13,7 +13,7 @@ if [ -z "$1" ]; then
 fi
 
 TOKEN="$1"
-API_BASE="https://api.fxincap.com"
+API_BASE="https://api.ncapfx.com"
 
 echo "===== Testing SUIMFX API Endpoints ====="
 echo ""
