@@ -134,7 +134,9 @@ export default function Markets() {
     const lev = accountBal?.leverage;
     if (lev != null && Number.isFinite(lev)) {
       leverageSyncedRef.current = true;
-      setLeverage(Math.min(100, Math.max(1, Math.round(lev))));
+      // No upper clamp: the panel offers ratios up to 1:2000, and the previous
+      // Math.min(100, …) silently capped any account above 1:100.
+      setLeverage(Math.max(1, Math.round(lev)));
     }
   }, [accountBal?.leverage]);
 
