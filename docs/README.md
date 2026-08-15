@@ -13,7 +13,9 @@ what is next, and the local `.env` you need. Start here.
 2. [ARCHITECTURE.md](./ARCHITECTURE.md) — five services and who owns what
 3. [REPOSITORY_STRUCTURE.md](./REPOSITORY_STRUCTURE.md) — where things live
 4. [DEVELOPMENT.md](./DEVELOPMENT.md) — get it running locally
-5. [GIT_WORKFLOW.md](./GIT_WORKFLOW.md) — **read before your first push** (two-PC setup)
+5. [WORKFLOW.md](./WORKFLOW.md) — **read before your first change**: the
+   local → test → PR → auto-deploy loop, and what a deploy actually does
+6. [GIT_WORKFLOW.md](./GIT_WORKFLOW.md) — two-PC branch conventions
 
 **"I'm changing the market-data provider"**
 1. [MARKET_DATA_ARCHITECTURE.md](./MARKET_DATA_ARCHITECTURE.md) — the pipeline and the exact

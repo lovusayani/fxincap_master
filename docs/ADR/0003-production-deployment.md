@@ -93,4 +93,9 @@ Server-side configuration lives in a gitignored `.deploy.env` holding `DEPLOY_WE
 2. Reconcile `main` and `dev` and settle on one deployment branch.
 3. Add a build gate (even just typecheck + build) before the PM2 restart.
 4. Add `pm2 install pm2-logrotate`.
-5. Document the live directory layout and delete the ecosystem files for the layout not in use.
+5. ~~Document the live directory layout and delete the ecosystem files for the layout not in use.~~
+   **Done 2026-08-15.** Verified from `pm2 jlist` that production runs the monorepo layout at
+   `/var/www/fxincap-production/`. The five per-service `ecosystem.config.*` files described the
+   unused `/home/<user>/htdocs/<domain>` layout and were deleted, along with the staging trio
+   (`ecosystem.staging.portable.cjs`, `run-staging.sh`, `install-staging.sh`) — no staging
+   directory or PM2 process exists. See [DEPLOYMENT.md](../DEPLOYMENT.md) §4.
