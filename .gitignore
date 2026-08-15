@@ -96,3 +96,6 @@ fxincapapi/test-trade.mjs
 !.vscode/extensions.json
 !.vscode/settings.json
 .idea/
+
+# Scratch credential file - an Infoway API key was committed here (see SECURITY.md)
+imp

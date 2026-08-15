@@ -11,7 +11,7 @@ if [ -f "${DEPLOY_ENV_FILE}" ]; then
   source "${DEPLOY_ENV_FILE}"
   set +a
 fi
-export VITE_API_URL="${VITE_API_URL:-https://api.fxincap.com}"
+export VITE_API_URL="${VITE_API_URL:-https://api.ncapfx.com}"
 
 echo "Using production repo at: ${BASE_DIR}"
 echo "VITE_API_URL for trade build: ${VITE_API_URL}"

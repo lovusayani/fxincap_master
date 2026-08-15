@@ -34,7 +34,7 @@ function resolveActivationTemplatePath(): string {
 }
 
 function buildActivationLink(email: string, code: string): string {
-  const appUrl = (process.env.VITE_APP_URL || "https://trade.fxincap.com").replace(/\/$/, "");
+  const appUrl = (process.env.VITE_APP_URL || "https://trade.ncapfx.com").replace(/\/$/, "");
   return `${appUrl}/?step=verify&email=${encodeURIComponent(email)}&code=${encodeURIComponent(code)}`;
 }
 
