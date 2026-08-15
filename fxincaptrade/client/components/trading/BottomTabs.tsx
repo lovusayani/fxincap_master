@@ -90,6 +90,9 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
     const [positions, setPositions] = useState<Position[]>([]);
     const [orders, setOrders] = useState<Order[]>([]);
     const [history, setHistory] = useState<HistoryRow[]>([]);
+    /** Full closed-trade count. `history` is truncated to 10 rows for display,
+     *  so its length would under-report the badge once there are more. */
+    const [historyTotal, setHistoryTotal] = useState(0);
     const [loading, setLoading] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [slTpModal, setSlTpModal] = useState<SlTpEditModal>(null);
@@ -107,6 +110,7 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
             setPositions([]);
             setOrders([]);
             setHistory([]);
+            setHistoryTotal(0);
             setErrorMessage(null);
             setLoading(false);
             return;
@@ -162,6 +166,7 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
             if (histRes.ok) {
                 const d = await histRes.json();
                 const raw: any[] = Array.isArray(d) ? d : (d.history ?? d ?? []);
+                setHistoryTotal(raw.length);
                 setHistory(raw.slice(0, 10).map((t: any) => ({
                     id: String(t.id),
                     symbol: t.symbol,
@@ -301,16 +306,27 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
         <div className="h-full bg-[#0d0f1b] text-white flex flex-col">
             <div className="flex border-b border-white/10">
                 {[
-                    { key: "positions", label: "Positions" },
-                    { key: "orders", label: "Orders" },
-                    { key: "history", label: "History" },
+                    { key: "positions", label: "Positions", count: positions.length },
+                    { key: "orders", label: "Orders", count: orders.length },
+                    { key: "history", label: "History", count: historyTotal },
                 ].map((t) => (
                     <button
                         key={t.key}
                         onClick={() => setTab(t.key as "positions" | "orders" | "history")}
-                        className={`px-4 py-2 text-xs font-semibold ${tab === t.key ? "text-cyan-300 border-b-2 border-cyan-400" : "text-gray-400"}`}
+                        className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold ${tab === t.key ? "text-cyan-300 border-b-2 border-cyan-400" : "text-gray-400"}`}
                     >
                         {t.label}
+                        {t.count > 0 && (
+                            <span
+                                className={`inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none tabular-nums ${
+                                    tab === t.key
+                                        ? "bg-cyan-400/20 text-cyan-200 ring-1 ring-inset ring-cyan-400/30"
+                                        : "bg-white/10 text-gray-300"
+                                }`}
+                            >
+                                {t.count > 99 ? "99+" : t.count}
+                            </span>
+                        )}
                     </button>
                 ))}
                 {loading && <span className="ml-auto px-4 py-2 text-xs text-gray-500">loading…</span>}
