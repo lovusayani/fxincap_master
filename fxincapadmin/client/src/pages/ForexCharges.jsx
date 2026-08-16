@@ -29,16 +29,34 @@ const PageSubtitle = styled.p`
   margin: 0;
 `
 
+/** The three charge types side by side, collapsing to one column when narrow. */
+const ChargeGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: ${theme.spacing.lg};
+  align-items: start;
+
+  @media (max-width: 1100px) {
+    grid-template-columns: 1fr;
+  }
+`
+
 const Section = styled.div`
   border: 1px solid ${theme.colors.border};
   border-radius: ${theme.radius.md};
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 `
 
+
+/** Stacked rather than side-by-side: the three columns are too narrow to fit a
+ *  title and an action button on one line. */
 const SectionHeader = styled.div`
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
+  gap: ${theme.spacing.md};
   padding: ${theme.spacing.lg};
   background: ${theme.colors.card};
   border-bottom: 1px solid ${theme.colors.border};
@@ -85,6 +103,7 @@ const SectionSubtitle = styled.p`
 const AddButton = styled.button`
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: ${theme.spacing.sm};
   padding: ${theme.spacing.sm} ${theme.spacing.lg};
   background: ${theme.colors.primary};
@@ -384,15 +403,24 @@ const SecondaryButton = styled(Button)`
   }
 `
 
+/** Symbols offered in the picker. 'ALL' is the fallback for anything else. */
+const SPREAD_SYMBOLS = [
+  'ALL',
+  'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD', 'USDCAD', 'NZDUSD',
+  'EURGBP', 'EURJPY', 'GBPJPY',
+  'XAUUSD', 'XAGUSD',
+  'BTCUSDT', 'ETHUSDT',
+]
+
 export const ForexCharges = () => {
   const [commissions, setCommissions] = useState([])
-  const [spreads, setSpreads] = useState([
-    { id: 1, name: 'Global', value: 20, unit: 'percentage' },
-  ])
+  const [spreads, setSpreads] = useState([])
   const [swaps, setSwaps] = useState([])
   const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
   const [openModal, setOpenModal] = useState(null)
-  const [formData, setFormData] = useState({ name: '', value: '', unit: 'percentage' })
+  const [formData, setFormData] = useState({ symbol: 'ALL', spreadPips: '', enabled: true })
 
   useEffect(() => {
     fetchCharges()
@@ -400,100 +428,141 @@ export const ForexCharges = () => {
 
   const fetchCharges = async () => {
     setLoading(true)
+    setError(null)
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('adminToken')
       const response = await fetch('/api/admin/forex-charges', {
         headers: { Authorization: `Bearer ${token}` },
       })
-      if (response.ok) {
-        const data = await response.json()
-        setCommissions(data?.commissions || [])
-        setSpreads(data?.spreads || [])
-        setSwaps(data?.swaps || [])
+      if (!response.ok) {
+        // Surfaced rather than swallowed: this page previously hid a 404 behind
+        // an `if (response.ok)` and looked like it was working.
+        const body = await response.json().catch(() => null)
+        throw new Error(body?.error || `Failed to load charges (HTTP ${response.status})`)
       }
-    } catch (error) {
-      console.error('Error fetching charges:', error)
+      const data = await response.json()
+      setCommissions(data?.commissions || [])
+      setSpreads(data?.spreads || [])
+      setSwaps(data?.swaps || [])
+    } catch (err) {
+      console.error('Error fetching charges:', err)
+      setError(err.message)
     } finally {
       setLoading(false)
     }
   }
 
   const handleAddCharge = (type) => {
-    setFormData({ name: '', value: '', unit: 'percentage' })
+    setFormData({ symbol: 'ALL', spreadPips: '', enabled: true })
+    setError(null)
     setOpenModal(type)
   }
 
   const handleSaveCharge = async () => {
-    if (!formData.name || !formData.value) {
-      alert('Please fill in all fields')
+    const pips = Number(formData.spreadPips)
+    if (!formData.symbol) {
+      setError('Choose a symbol')
+      return
+    }
+    if (!Number.isFinite(pips) || pips < 0) {
+      setError('Spread must be a number of pips, 0 or greater')
       return
     }
 
+    setSaving(true)
+    setError(null)
     try {
-      const token = localStorage.getItem('token')
-      const response = await fetch(`/api/admin/forex-charges/${openModal}`, {
+      const token = localStorage.getItem('adminToken')
+      const response = await fetch('/api/admin/forex-charges/spread', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          symbol: formData.symbol,
+          spreadPips: pips,
+          enabled: formData.enabled,
+        }),
       })
 
-      if (response.ok) {
-        const newCharge = { id: Date.now(), ...formData }
-
-        if (openModal === 'commission') {
-          setCommissions([...commissions, newCharge])
-        } else if (openModal === 'spread') {
-          setSpreads([...spreads, newCharge])
-        } else if (openModal === 'swap') {
-          setSwaps([...swaps, newCharge])
-        }
-
-        setOpenModal(null)
-        setFormData({ name: '', value: '', unit: 'percentage' })
+      const body = await response.json().catch(() => null)
+      if (!response.ok || body?.success === false) {
+        throw new Error(body?.error || `Save failed (HTTP ${response.status})`)
       }
-    } catch (error) {
-      console.error('Error saving charge:', error)
-      alert('Error saving charge')
+
+      // Re-read from the server rather than trusting local state, so what is
+      // displayed is what was actually persisted.
+      await fetchCharges()
+      setOpenModal(null)
+      setFormData({ symbol: 'ALL', spreadPips: '', enabled: true })
+    } catch (err) {
+      console.error('Error saving charge:', err)
+      setError(err.message)
+    } finally {
+      setSaving(false)
     }
   }
 
-  const handleDeleteCharge = (type, id) => {
-    if (type === 'commission') {
-      setCommissions(commissions.filter(c => c.id !== id))
-    } else if (type === 'spread') {
-      setSpreads(spreads.filter(s => s.id !== id))
-    } else if (type === 'swap') {
-      setSwaps(swaps.filter(s => s.id !== id))
+  const handleDeleteSpread = async (symbol) => {
+    if (!window.confirm(`Remove the spread configured for ${symbol}?`)) return
+    setError(null)
+    try {
+      const token = localStorage.getItem('adminToken')
+      const response = await fetch(`/api/admin/forex-charges/spread/${encodeURIComponent(symbol)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const body = await response.json().catch(() => null)
+      if (!response.ok || body?.success === false) {
+        throw new Error(body?.error || `Delete failed (HTTP ${response.status})`)
+      }
+      await fetchCharges()
+    } catch (err) {
+      console.error('Error deleting spread:', err)
+      setError(err.message)
     }
   }
 
-  const handleEditCharge = (type, id) => {
-    const charge = type === 'commission' ? commissions.find(c => c.id === id) :
-                   type === 'spread' ? spreads.find(s => s.id === id) :
-                   swaps.find(s => s.id === id)
-
-    if (charge) {
-      setFormData(charge)
-      setOpenModal(type)
-    }
+  const handleEditSpread = (item) => {
+    setFormData({
+      symbol: item.symbol,
+      spreadPips: String(item.spreadPips),
+      enabled: item.enabled,
+    })
+    setError(null)
+    setOpenModal('spread')
   }
+
+  const renderSpreadItem = (item) => (
+    <Item key={item.symbol}>
+      <ItemLabel>
+        <ItemBadge>{item.symbol === 'ALL' ? 'Fallback' : 'Symbol'}</ItemBadge>
+        <ItemName>{item.symbol}</ItemName>
+        {!item.enabled && <Unit style={{ color: '#ef4444' }}>disabled</Unit>}
+      </ItemLabel>
+      <ItemValue>
+        <Value>{item.spreadPips}</Value>
+        <Unit>pips</Unit>
+        <ActionButtons>
+          <IconButton onClick={() => handleEditSpread(item)}>edit</IconButton>
+          {item.symbol !== 'ALL' && (
+            <IconButton className="delete" onClick={() => handleDeleteSpread(item.symbol)}>delete</IconButton>
+          )}
+        </ActionButtons>
+      </ItemValue>
+    </Item>
+  )
 
   const renderChargeItem = (type, item) => (
     <Item key={item.id}>
       <ItemLabel>
-        <ItemBadge>{type === 'commission' ? 'Commission' : type === 'spread' ? 'Spread' : 'Swap'}</ItemBadge>
+        <ItemBadge>{type === 'commission' ? 'Commission' : 'Swap'}</ItemBadge>
         <ItemName>{item.name}</ItemName>
       </ItemLabel>
       <ItemValue>
         <Value>{item.value}</Value>
         <Unit>{item.unit}</Unit>
-        <ActionButtons>
-          <IconButton onClick={() => handleEditCharge(type, item.id)}>edit</IconButton>
-          <IconButton className="delete" onClick={() => handleDeleteCharge(type, item.id)}>delete</IconButton>
-        </ActionButtons>
       </ItemValue>
     </Item>
   )
@@ -507,6 +576,15 @@ export const ForexCharges = () => {
         <PageSubtitle>Manage trading fees and spreads</PageSubtitle>
       </PageHeader>
 
+      {error && !openModal && (
+        <Section style={{ borderColor: '#ef4444' }}>
+          <SectionContent style={{ minHeight: 'auto', padding: '12px 16px' }}>
+            <EmptyState style={{ color: '#ef4444' }}>{error}</EmptyState>
+          </SectionContent>
+        </Section>
+      )}
+
+      <ChargeGrid>
       {/* Commission Section */}
       <Section>
         <SectionHeader>
@@ -517,7 +595,9 @@ export const ForexCharges = () => {
               <SectionSubtitle>Trading fees per lot/trade</SectionSubtitle>
             </SectionTitleText>
           </SectionTitleGroup>
-          <AddButton onClick={() => handleAddCharge('commission')}>
+          {/* Commission has no backend yet; the button is disabled rather than
+              opening a form that cannot save. */}
+          <AddButton disabled title="Commission configuration is not implemented yet" style={{ opacity: 0.4, cursor: 'not-allowed' }}>
             <span style={{ fontFamily: 'Material Symbols Outlined' }}>add</span>
             Add Commission
           </AddButton>
@@ -540,21 +620,25 @@ export const ForexCharges = () => {
             <SectionIcon>📈</SectionIcon>
             <SectionTitleText>
               <SectionTitle>Spread</SectionTitle>
-              <SectionSubtitle>Bid/Ask price difference</SectionSubtitle>
+              <SectionSubtitle>
+                Extra pips added on top of the provider's raw Bid/Ask, split evenly so the mid price is unchanged
+              </SectionSubtitle>
             </SectionTitleText>
           </SectionTitleGroup>
           <AddButton onClick={() => handleAddCharge('spread')}>
             <span style={{ fontFamily: 'Material Symbols Outlined' }}>add</span>
-            Add Spread
+            Set Spread
           </AddButton>
         </SectionHeader>
         <SectionContent>
-          {spreads.length > 0 ? (
+          {loading ? (
+            <EmptyState>Loading…</EmptyState>
+          ) : spreads.length > 0 ? (
             <ItemList>
-              {spreads.map(item => renderChargeItem('spread', item))}
+              {spreads.map(renderSpreadItem)}
             </ItemList>
           ) : (
-            <EmptyState>No spread charges configured</EmptyState>
+            <EmptyState>No spreads configured — traders see the raw provider price</EmptyState>
           )}
         </SectionContent>
       </Section>
@@ -569,7 +653,8 @@ export const ForexCharges = () => {
               <SectionSubtitle>Overnight holding fees</SectionSubtitle>
             </SectionTitleText>
           </SectionTitleGroup>
-          <AddButton onClick={() => handleAddCharge('swap')}>
+          {/* Swap has no backend yet — see the Commission note above. */}
+          <AddButton disabled title="Swap configuration is not implemented yet" style={{ opacity: 0.4, cursor: 'not-allowed' }}>
             <span style={{ fontFamily: 'Material Symbols Outlined' }}>add</span>
             Add Swap
           </AddButton>
@@ -584,55 +669,70 @@ export const ForexCharges = () => {
           )}
         </SectionContent>
       </Section>
+      </ChargeGrid>
 
       {/* Add/Edit Modal */}
       <Modal $visible={openModal}>
         <ModalContent onClick={e => e.stopPropagation()}>
           <ModalHeader>
-            <ModalTitle>
-              {openModal === 'commission' ? 'Add Commission' :
-               openModal === 'spread' ? 'Add Spread' :
-               'Add Swap'}
-            </ModalTitle>
+            <ModalTitle>Set Spread</ModalTitle>
             <CloseButton onClick={() => setOpenModal(null)}>✕</CloseButton>
           </ModalHeader>
 
           <FormGroup>
-            <FormLabel>Charge Name</FormLabel>
-            <FormInput
-              type="text"
-              placeholder="e.g., Global, Premium, etc."
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-            />
+            <FormLabel>Symbol</FormLabel>
+            <FormSelect
+              value={formData.symbol}
+              onChange={(e) => setFormData({ ...formData, symbol: e.target.value })}
+            >
+              {SPREAD_SYMBOLS.map(s => (
+                <option key={s} value={s}>{s === 'ALL' ? 'ALL — fallback for every symbol' : s}</option>
+              ))}
+            </FormSelect>
+            <SectionSubtitle>
+              A symbol's own setting wins; ALL applies to anything without one.
+            </SectionSubtitle>
           </FormGroup>
 
           <FormGroup>
-            <FormLabel>Value</FormLabel>
+            <FormLabel>Spread (pips)</FormLabel>
             <FormInput
               type="number"
-              placeholder="0.00"
-              value={formData.value}
-              onChange={(e) => setFormData({ ...formData, value: e.target.value })}
-              step="0.01"
+              placeholder="e.g. 1.5"
+              value={formData.spreadPips}
+              onChange={(e) => setFormData({ ...formData, spreadPips: e.target.value })}
+              step="0.1"
+              min="0"
             />
+            <SectionSubtitle>
+              Half is taken off the Bid and half added to the Ask, so the mid price does not move.
+              On EUR/USD 1 pip = 0.0001. Enter 0 to quote the provider price unchanged.
+            </SectionSubtitle>
           </FormGroup>
 
           <FormGroup>
-            <FormLabel>Unit</FormLabel>
-            <FormSelect
-              value={formData.unit}
-              onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
-            >
-              <option value="percentage">Percentage (%)</option>
-              <option value="fixed">Fixed (USD)</option>
-              <option value="pips">Pips</option>
-            </FormSelect>
+            <FormLabel style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={formData.enabled}
+                onChange={(e) => setFormData({ ...formData, enabled: e.target.checked })}
+              />
+              Enabled
+            </FormLabel>
+            <SectionSubtitle>
+              When off, this row is ignored and the symbol falls through to ALL (or the raw price).
+            </SectionSubtitle>
           </FormGroup>
 
+          {error && (
+            <SectionSubtitle style={{ color: '#ef4444' }}>{error}</SectionSubtitle>
+          )}
+
           <ButtonGroup>
-            <SecondaryButton onClick={() => setOpenModal(null)}>Cancel</SecondaryButton>
-            <PrimaryButton onClick={handleSaveCharge}>Save</PrimaryButton>
+            <SecondaryButton onClick={() => setOpenModal(null)} disabled={saving}>Cancel</SecondaryButton>
+            <PrimaryButton onClick={handleSaveCharge} disabled={saving}>
+              {saving ? 'Saving…' : 'Save'}
+            </PrimaryButton>
           </ButtonGroup>
         </ModalContent>
       </Modal>

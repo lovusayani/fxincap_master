@@ -311,7 +311,7 @@ export const GroupSetting = () => {
 
   const fetchSettings = async () => {
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('adminToken')
       const response = await fetch('/api/admin/lp-settings', {
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -338,7 +338,7 @@ export const GroupSetting = () => {
     setTestLoading(true)
     setMessage(null)
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('adminToken')
       const response = await fetch('/api/admin/lp-test-connection', {
         method: 'POST',
         headers: {
@@ -371,7 +371,7 @@ export const GroupSetting = () => {
     setLoading(true)
     setMessage(null)
     try {
-      const token = localStorage.getItem('token')
+      const token = localStorage.getItem('adminToken')
       const response = await fetch('/api/admin/lp-settings', {
         method: 'POST',
         headers: {

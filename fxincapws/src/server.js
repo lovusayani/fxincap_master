@@ -8,6 +8,7 @@ import { FinnhubProvider } from './providers/finnhub.js';
 import { BinanceProvider } from './providers/binance.js';
 import { TwelvedataProvider } from './providers/twelvedata.js';
 import { InfowayProvider } from './providers/infoway.js';
+import { applySpread } from './spread.js';
 
 const app = express();
 app.use(cors());
@@ -98,7 +99,11 @@ function broadcastSymbolUpdate(symbol, update) {
 function subscribeSymbolOnProvider(symbol) {
   if (!provider || providerHandlers.has(symbol)) return;
   const handler = (update) => {
-    broadcastSymbolUpdate(symbol, update);
+    // Streamed ticks carry the same markup as REST quotes; without this the
+    // chart and the order ticket would show different prices for one symbol.
+    applySpread(update, symbol)
+      .then((adjusted) => broadcastSymbolUpdate(symbol, adjusted))
+      .catch(() => broadcastSymbolUpdate(symbol, update));
   };
   provider.subscribe(symbol, handler);
   providerHandlers.set(symbol, handler);
@@ -263,7 +268,9 @@ async function getQuoteWithFailover(symbol) {
   // provider's own onFailure hook (see createProviderInstance).
   try {
     const quote = await provider.getQuote(symbol);
-    if (quote) return quote;
+    // Broker markup is applied here so REST quotes, the stream and settlement
+    // all read the same adjusted price. See src/spread.js.
+    if (quote) return await applySpread(quote, symbol);
     providerLoadError = `Quote unavailable for ${symbol}`;
   } catch (error) {
     providerLoadError = normalizeErrorMessage(error);
