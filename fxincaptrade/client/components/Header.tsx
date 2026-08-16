@@ -70,6 +70,7 @@ export default function Header() {
     const navLinks = [
         { label: "Dashboard", path: "/", icon: Home },
         { label: "Portfolio", path: "/portfolio", icon: Briefcase },
+        { label: "My Accounts", path: "/accounts", icon: Wallet },
         { label: "Markets", path: "/markets", icon: TrendingUp },
         { label: "Wallet", path: "/wallet", icon: Wallet },
         { label: "IB Program", path: "/ib", icon: Award },
@@ -79,6 +80,7 @@ export default function Header() {
 
     const desktopTopLinks = [
         { label: "Portfolio", path: "/portfolio" },
+        { label: "My Accounts", path: "/accounts" },
         { label: "Markets", path: "/markets" },
         { label: "MT5", path: "/mt5" },
         { label: "Copy Trade", path: "/mampamm" },

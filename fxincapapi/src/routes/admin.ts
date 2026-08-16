@@ -7,6 +7,22 @@ import { fetchFundRequests, updateFundRequestStatus, fetchFundRequestById, compl
 import { fetchKycDocuments, fetchKycDocumentById, updateKycStatus } from "../services/adminKyc.js";
 import { getAutoCloseTimeoutMinutes, setAutoCloseTimeoutMinutes } from "../lib/trade-settings.js";
 import { ensureAccountTypesTable } from "../lib/account-types.js";
+import {
+  ensureSymbolSpreadsTable,
+  listSymbolSpreads,
+  upsertSymbolSpread,
+  deleteSymbolSpread,
+} from "../lib/symbol-spreads.js";
+import {
+  closeTrade,
+  createTrade,
+  validateTradeOpen,
+  getRequiredMargin,
+  lockBalance,
+  unlockBalance,
+  resolveActiveAccountId,
+} from "../lib/trading-engine.js";
+import { getSettlementPrice } from "../lib/market-price.js";
 import { getConnection, query } from "../lib/database.js";
 import { JWT_SECRET } from "../lib/env.js";
 import { v4 as uuidv4 } from "uuid";
@@ -2267,6 +2283,391 @@ router.get("/mampam/followers", verifyToken, async (_req: AuthRequest, res: Resp
     res.json({ success: true, data: rows });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Open-trade administration
+ *
+ * Lets an administrator close or amend a trader's open position from the
+ * Trade Settings page.
+ *
+ * Closing settles real money, so the close price is taken from the
+ * server-authoritative feed (getSettlementPrice) and never from the request
+ * body — the same rule the trader-facing close path follows. An admin can
+ * override it, but that is recorded as a distinct closing reason.
+ * ------------------------------------------------------------------ */
+
+router.post("/trades/:id/close", async (req: AuthRequest, res: Response) => {
+  try {
+    const tradeId = Number(req.params.id);
+    if (!Number.isInteger(tradeId) || tradeId <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid trade id" });
+    }
+
+    const existing = await query(
+      `SELECT id, symbol, side, status FROM trades WHERE id = $1`,
+      [tradeId],
+    );
+    const trade = existing?.[0];
+    if (!trade) {
+      return res.status(404).json({ success: false, error: "Trade not found" });
+    }
+    if (String(trade.status).toUpperCase() !== "OPEN") {
+      return res.status(409).json({ success: false, error: "Trade is already closed" });
+    }
+
+    // An explicit admin price is allowed but must be deliberate; otherwise the
+    // live server price is used.
+    const overrideRaw = req.body?.closePrice;
+    const hasOverride = overrideRaw !== undefined && overrideRaw !== null && overrideRaw !== "";
+    let closePrice: number | null = null;
+    let reason = "ADMIN_CLOSE";
+
+    if (hasOverride) {
+      const parsed = Number(overrideRaw);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return res.status(400).json({ success: false, error: "closePrice must be a positive number" });
+      }
+      closePrice = parsed;
+      reason = "ADMIN_CLOSE_MANUAL_PRICE";
+    } else {
+      closePrice = await getSettlementPrice(trade.symbol, trade.side, "CLOSE");
+      if (closePrice == null) {
+        // Refusing beats settling at a stale or invented price.
+        return res.status(503).json({
+          success: false,
+          error: `No fresh market price available for ${trade.symbol}. Retry, or supply an explicit closePrice.`,
+        });
+      }
+    }
+
+    const result = await closeTrade(tradeId, closePrice, reason);
+    if (!result.success) {
+      return res.status(400).json({ success: false, error: result.error });
+    }
+
+    res.json({ success: true, tradeId, closePrice, finalPnL: result.finalPnL, reason });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/** Amend stop loss / take profit on an open trade. */
+router.patch("/trades/:id", async (req: AuthRequest, res: Response) => {
+  try {
+    const tradeId = Number(req.params.id);
+    if (!Number.isInteger(tradeId) || tradeId <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid trade id" });
+    }
+
+    const existing = await query(`SELECT id, status FROM trades WHERE id = $1`, [tradeId]);
+    const trade = existing?.[0];
+    if (!trade) {
+      return res.status(404).json({ success: false, error: "Trade not found" });
+    }
+    if (String(trade.status).toUpperCase() !== "OPEN") {
+      return res.status(409).json({ success: false, error: "Only open trades can be amended" });
+    }
+
+    const parseLevel = (value: unknown, label: string): number | null | undefined => {
+      if (value === undefined) return undefined;            // not supplied — leave as is
+      if (value === null || value === "") return null;       // explicitly cleared
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`${label} must be a positive number or empty`);
+      return n;
+    };
+
+    const stopLoss = parseLevel(req.body?.stopLoss, "stopLoss");
+    const takeProfit = parseLevel(req.body?.takeProfit, "takeProfit");
+
+    let volume: number | undefined;
+    if (req.body?.volume !== undefined && req.body?.volume !== null && req.body?.volume !== "") {
+      const parsed = Number(req.body.volume);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return res.status(400).json({ success: false, error: "volume must be greater than 0" });
+      }
+      volume = parsed;
+    }
+
+    if (stopLoss === undefined && takeProfit === undefined && volume === undefined) {
+      return res.status(400).json({ success: false, error: "Nothing to update" });
+    }
+
+    // Entry price stays fixed — rewriting it would silently restate the P&L
+    // already accrued against the position.
+    //
+    // Volume, when changed, must move the locked margin with it: the original
+    // lock was computed from the old volume, so writing a new volume alone
+    // would leave the trader's available balance wrong for the life of the
+    // trade. Done under one transaction with a row lock.
+    const conn = await getConnection();
+    try {
+      await conn.query("BEGIN");
+
+      const locked = await conn.query(
+        `SELECT id, user_id, account_id, symbol, volume, entry_price, leverage, locked_balance
+           FROM trades WHERE id = $1 AND status = 'OPEN' FOR UPDATE`,
+        [tradeId],
+      );
+      const row = locked.rows?.[0];
+      if (!row) {
+        await conn.query("ROLLBACK");
+        return res.status(409).json({ success: false, error: "Trade is no longer open" });
+      }
+
+      const sets: string[] = [];
+      const params: any[] = [];
+
+      if (stopLoss !== undefined) {
+        params.push(stopLoss);
+        sets.push(`stop_loss = $${params.length}`);
+      }
+      if (takeProfit !== undefined) {
+        params.push(takeProfit);
+        sets.push(`take_profit = $${params.length}`);
+      }
+
+      if (volume !== undefined) {
+        const newLocked = getRequiredMargin(row.symbol, volume, Number(row.entry_price), Number(row.leverage));
+        if (newLocked == null) {
+          await conn.query("ROLLBACK");
+          return res.status(400).json({ success: false, error: "Could not recalculate margin for that volume" });
+        }
+
+        const oldLocked = Number(row.locked_balance) || 0;
+        const delta = newLocked - oldLocked;
+        const accountId = row.account_id || (await resolveActiveAccountId(row.user_id, conn));
+        if (!accountId) {
+          await conn.query("ROLLBACK");
+          return res.status(400).json({ success: false, error: "No account found to adjust margin against" });
+        }
+
+        if (delta > 0) {
+          const lockRes = await lockBalance(accountId, delta, conn);
+          if (!lockRes.success) {
+            await conn.query("ROLLBACK");
+            return res.status(400).json({ success: false, error: lockRes.error || "Insufficient free margin for the larger volume" });
+          }
+        } else if (delta < 0) {
+          const unlockRes = await unlockBalance(accountId, -delta, conn);
+          if (!unlockRes.success) {
+            await conn.query("ROLLBACK");
+            return res.status(400).json({ success: false, error: unlockRes.error });
+          }
+        }
+
+        params.push(volume);
+        sets.push(`volume = $${params.length}`);
+        params.push(newLocked);
+        sets.push(`locked_balance = $${params.length}`);
+      }
+
+      params.push(tradeId);
+      await conn.query(`UPDATE trades SET ${sets.join(", ")} WHERE id = $${params.length}`, params);
+      await conn.query("COMMIT");
+    } catch (txError: any) {
+      await conn.query("ROLLBACK").catch(() => {});
+      return res.status(500).json({ success: false, error: txError.message });
+    } finally {
+      conn.release();
+    }
+
+    const updated = await query(
+      `SELECT id, symbol, side, volume, stop_loss, take_profit, locked_balance FROM trades WHERE id = $1`,
+      [tradeId],
+    );
+    res.json({ success: true, trade: updated?.[0] });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Delete a trade record outright.
+ *
+ * This is not "close" — it removes the row and leaves no settlement. An OPEN
+ * trade also holds locked margin, so deleting one without releasing it would
+ * strand the trader's balance; that release happens here in the same
+ * transaction. Intended for cleaning up erroneous records, not for exiting
+ * positions — use /close for that.
+ */
+router.delete("/trades/:id", async (req: AuthRequest, res: Response) => {
+  const tradeId = Number(req.params.id);
+  if (!Number.isInteger(tradeId) || tradeId <= 0) {
+    return res.status(400).json({ success: false, error: "Invalid trade id" });
+  }
+
+  const conn = await getConnection();
+  try {
+    await conn.query("BEGIN");
+
+    const found = await conn.query(
+      `SELECT id, user_id, account_id, status, locked_balance FROM trades WHERE id = $1 FOR UPDATE`,
+      [tradeId],
+    );
+    const trade = found.rows?.[0];
+    if (!trade) {
+      await conn.query("ROLLBACK");
+      return res.status(404).json({ success: false, error: "Trade not found" });
+    }
+
+    if (String(trade.status).toUpperCase() === "OPEN") {
+      const accountId = trade.account_id || (await resolveActiveAccountId(trade.user_id, conn));
+      if (accountId) {
+        const unlocked = await unlockBalance(accountId, trade.locked_balance, conn);
+        if (!unlocked.success) {
+          await conn.query("ROLLBACK");
+          return res.status(400).json({ success: false, error: unlocked.error });
+        }
+      }
+    }
+
+    await conn.query(`DELETE FROM trades WHERE id = $1`, [tradeId]);
+    await conn.query("COMMIT");
+    res.json({ success: true, tradeId, releasedMargin: String(trade.status).toUpperCase() === "OPEN" });
+  } catch (error: any) {
+    await conn.query("ROLLBACK").catch(() => {});
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    conn.release();
+  }
+});
+
+/**
+ * Open a position on a trader's behalf.
+ *
+ * Uses the same validate + create path as the trader-facing route, so margin,
+ * balance and SL/TP rules are identical. The entry price comes from the
+ * server-authoritative feed unless an admin deliberately supplies one.
+ */
+router.post("/trades", async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = String(req.body?.userId ?? "").trim();
+    const symbol = String(req.body?.symbol ?? "").trim().toUpperCase();
+    const side = String(req.body?.side ?? "").trim().toUpperCase();
+    const volume = Number(req.body?.volume);
+    const leverage = Number(req.body?.leverage ?? 100);
+
+    if (!userId) return res.status(400).json({ success: false, error: "userId is required" });
+    if (!symbol) return res.status(400).json({ success: false, error: "symbol is required" });
+    if (side !== "BUY" && side !== "SELL") {
+      return res.status(400).json({ success: false, error: "side must be BUY or SELL" });
+    }
+    if (!Number.isFinite(volume) || volume <= 0) {
+      return res.status(400).json({ success: false, error: "volume must be greater than 0" });
+    }
+
+    const parseLevel = (value: unknown) => {
+      if (value === undefined || value === null || value === "") return null;
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const stopLoss = parseLevel(req.body?.stopLoss);
+    const takeProfit = parseLevel(req.body?.takeProfit);
+
+    const userRow = await query(`SELECT id FROM users WHERE id = $1 LIMIT 1`, [userId]);
+    if (!userRow?.length) {
+      return res.status(404).json({ success: false, error: "Trader not found" });
+    }
+
+    let entryPrice: number | null;
+    const overrideRaw = req.body?.entryPrice;
+    if (overrideRaw !== undefined && overrideRaw !== null && overrideRaw !== "") {
+      const parsed = Number(overrideRaw);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return res.status(400).json({ success: false, error: "entryPrice must be a positive number" });
+      }
+      entryPrice = parsed;
+    } else {
+      entryPrice = await getSettlementPrice(symbol, side, "OPEN");
+      if (entryPrice == null) {
+        return res.status(503).json({
+          success: false,
+          error: `No fresh market price available for ${symbol}. Retry, or supply an explicit entryPrice.`,
+        });
+      }
+    }
+
+    const validation = await validateTradeOpen(userId, symbol, side, volume, entryPrice, leverage, stopLoss, takeProfit);
+    if (!validation.valid) {
+      return res.status(400).json({ success: false, error: validation.error });
+    }
+
+    const created = await createTrade(userId, symbol, side as "BUY" | "SELL", volume, entryPrice, takeProfit, stopLoss, leverage);
+    if (!created.success) {
+      return res.status(400).json({ success: false, error: created.error });
+    }
+
+    res.json({ success: true, tradeId: created.tradeId, symbol, side, volume, entryPrice, leverage });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Forex charges — spread configuration
+ *
+ * Backs the admin Forex Charges page. Spreads are stored here and applied
+ * server-side in fxincap-ws at the quote boundary, never in the browser.
+ *
+ * Mounted under /api/admin, which index.ts guards with verifyToken +
+ * requireAdmin, so these inherit administrator authorization.
+ * ------------------------------------------------------------------ */
+
+router.get("/forex-charges", async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureSymbolSpreadsTable();
+    const spreads = await listSymbolSpreads();
+    // commissions/swaps are not implemented yet; the page renders all three
+    // sections, so return empty lists rather than letting it read undefined.
+    res.json({ success: true, spreads, commissions: [], swaps: [] });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/forex-charges/spread", async (req: AuthRequest, res: Response) => {
+  try {
+    const rawSymbol = String(req.body?.symbol ?? "").trim().toUpperCase();
+    if (!rawSymbol) {
+      return res.status(400).json({ success: false, error: "symbol is required" });
+    }
+    if (!/^[A-Z0-9._]{2,32}$/.test(rawSymbol)) {
+      return res.status(400).json({ success: false, error: "symbol must be 2-32 characters (A-Z, 0-9, dot, underscore)" });
+    }
+
+    const pips = Number(req.body?.spreadPips);
+    if (!Number.isFinite(pips) || pips < 0) {
+      return res.status(400).json({ success: false, error: "spreadPips must be a number >= 0" });
+    }
+    // A markup this wide is almost certainly a unit mix-up (price vs pips) and
+    // would make the symbol untradeable, so refuse rather than apply it.
+    if (pips > 1000) {
+      return res.status(400).json({ success: false, error: "spreadPips above 1000 is rejected as a likely unit error" });
+    }
+
+    const enabled = req.body?.enabled === undefined ? true : Boolean(req.body.enabled);
+
+    await ensureSymbolSpreadsTable();
+    const saved = await upsertSymbolSpread(rawSymbol, pips, enabled);
+    res.json({ success: true, spread: saved });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete("/forex-charges/spread/:symbol", async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureSymbolSpreadsTable();
+    const removed = await deleteSymbolSpread(req.params.symbol);
+    if (!removed) {
+      return res.status(404).json({ success: false, error: "No spread configured for that symbol" });
+    }
+    res.json({ success: true });
+  } catch (error: any) {
+    // deleteSymbolSpread throws when asked to remove the structural ALL row.
+    res.status(400).json({ success: false, error: error.message });
   }
 });
 

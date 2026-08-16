@@ -132,8 +132,10 @@ export async function validateTradeOpen(
       return { valid: false, error: "Volume and entry price must be positive" };
     }
 
-    if (leverage < 1 || leverage > 100) {
-      return { valid: false, error: "Leverage must be between 1 and 100" };
+    // Upper bound raised from 100 to 2000: the order ticket offers ratios up to
+    // 1:2000, and the old cap rejected every trade above 1:100 server-side.
+    if (leverage < 1 || leverage > 2000) {
+      return { valid: false, error: "Leverage must be between 1 and 2000" };
     }
 
     if (side === "BUY") {

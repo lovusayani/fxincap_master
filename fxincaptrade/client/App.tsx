@@ -5,6 +5,7 @@ import Dashboard from "@/pages/Dashboard";
 import Markets from "@/pages/Markets";
 import TerminalPage from "@/pages/Terminal";
 import Portfolio from "@/pages/Portfolio";
+import AccountsPage from "@/pages/Accounts";
 import WalletPage from "@/pages/Wallet";
 import DepositPage from "@/pages/Deposit";
 import WithdrawPage from "@/pages/Withdraw";
@@ -582,6 +583,7 @@ export default function App() {
           <Route path="/markets" element={<RequireAuth><Markets /></RequireAuth>} />
           <Route path="/terminal" element={<RequireAuth><TerminalPage /></RequireAuth>} />
           <Route path="/portfolio" element={<RequireAuth><Portfolio /></RequireAuth>} />
+          <Route path="/accounts" element={<RequireAuth><AccountsPage /></RequireAuth>} />
           <Route path="/wallet" element={<RequireAuth><WalletPage /></RequireAuth>} />
           <Route path="/deposit" element={<RequireAuth><DepositPage /></RequireAuth>} />
           <Route path="/withdraw" element={<RequireAuth><WithdrawPage /></RequireAuth>} />
