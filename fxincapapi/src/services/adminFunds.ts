@@ -98,9 +98,14 @@ export async function fetchFundRequests(options: FundListOptions = {}): Promise<
       fr.screenshot_path,
       fr.created_at,
       u.email AS user_email,
-      CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) AS user_name
+      CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) AS user_name,
+      ua.account_number AS account_number,
+      ua.trading_mode  AS account_mode,
+      at.name          AS account_type_name
     FROM fund_requests fr
     LEFT JOIN users u ON u.id = fr.user_id
+    LEFT JOIN user_accounts ua ON ua.id = fr.account_id
+    LEFT JOIN account_types at ON at.id = ua.account_type_id
     ${whereClause}
     ORDER BY fr.created_at DESC
     LIMIT ${limit} OFFSET ${offset}
@@ -128,6 +133,11 @@ export async function fetchFundRequests(options: FundListOptions = {}): Promise<
     referenceNumber: r.reference_number || null,
     cryptoChain: r.crypto_chain || null,
     screenshotPath: r.screenshot_path || null,
+    // Which of the trader's accounts the money is for. Null on legacy rows
+    // raised before the account chooser existed.
+    accountNumber: r.account_number || null,
+    accountMode: r.account_mode || null,
+    accountTypeName: r.account_type_name || null,
     createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
   }));
 }
@@ -216,7 +226,7 @@ export async function updateFundRequestStatus(id: string, status: "completed" | 
 export async function completeDepositAndCredit(id: string) {
   // 1) Load request
   const rows: any = await query(
-    "SELECT id, user_id, amount, type, status, reference_number FROM fund_requests WHERE id = ? LIMIT 1",
+    "SELECT id, user_id, amount, type, status, reference_number, account_id FROM fund_requests WHERE id = ? LIMIT 1",
     [id]
   );
   if (!Array.isArray(rows) || rows.length === 0) return { success: false, reason: "not-found" };
@@ -227,11 +237,25 @@ export async function completeDepositAndCredit(id: string) {
   const userId = req.user_id;
   const amount = parseFloat(req.amount);
 
-  // 2) Find or create real account
-  const accounts: any = await query(
-    "SELECT id, balance, equity, margin_free, account_number FROM user_accounts WHERE user_id = ? AND trading_mode = 'real' LIMIT 1",
-    [userId]
-  );
+  /**
+   * 2) Resolve the destination account.
+   *
+   * Honour the account the trader chose when the request was raised. A trader
+   * can hold several real accounts, and this previously always credited the
+   * first one returned — so money could land in the wrong account. Requests
+   * created before the chooser existed carry no account_id, and still fall back
+   * to the first real account.
+   */
+  const requestedAccountId = req.account_id ? String(req.account_id) : null;
+  const accounts: any = requestedAccountId
+    ? await query(
+        "SELECT id, balance, equity, margin_free, account_number FROM user_accounts WHERE id = ? AND user_id = ? LIMIT 1",
+        [requestedAccountId, userId]
+      )
+    : await query(
+        "SELECT id, balance, equity, margin_free, account_number FROM user_accounts WHERE user_id = ? AND trading_mode = 'real' LIMIT 1",
+        [userId]
+      );
 
   let accountId: string;
   let balanceBefore = 0;
@@ -286,13 +310,20 @@ export async function rejectWithdrawalAndCredit(id: string) {
 
   const userId = req.user_id;
   const amount = parseFloat(req.amount);
-  const accountId = req.account_id;
 
-  // Find real account
-  const accounts: any = await query(
-    "SELECT id, balance, equity, margin_free FROM user_accounts WHERE user_id = ? AND trading_mode = 'real' LIMIT 1",
-    [userId]
-  );
+  // Refund to the account the withdrawal was debited from. `account_id` was
+  // read here before but never used — the refund always went to the first real
+  // account, which is wrong when a trader holds more than one.
+  const debitedAccountId = req.account_id ? String(req.account_id) : null;
+  const accounts: any = debitedAccountId
+    ? await query(
+        "SELECT id, balance, equity, margin_free FROM user_accounts WHERE id = ? AND user_id = ? LIMIT 1",
+        [debitedAccountId, userId]
+      )
+    : await query(
+        "SELECT id, balance, equity, margin_free FROM user_accounts WHERE user_id = ? AND trading_mode = 'real' LIMIT 1",
+        [userId]
+      );
 
   if (!Array.isArray(accounts) || accounts.length === 0) {
     return { success: false, reason: "no-account" };

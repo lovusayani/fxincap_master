@@ -31,7 +31,7 @@ const monthlyData = [
 
 function DemoChart({ data }: { data: Array<{ label: string; value: number }> }) {
     return (
-        <div className="h-64 rounded-2xl border border-white/10 bg-gradient-to-br from-red-600/10 via-slate-900/40 to-orange-500/10 p-4">
+        <div className="h-64 rounded-xl border border-white/10 bg-gradient-to-br from-red-600/10 via-slate-900/40 to-orange-500/10 p-2.5">
             <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={data} margin={{ top: 10, right: 8, left: -20, bottom: 0 }}>
                     <defs>
@@ -67,11 +67,11 @@ function DemoChart({ data }: { data: Array<{ label: string; value: number }> }) 
 
 export function ChartCard() {
     return (
-        <Card className="rounded-2xl border-white/15 bg-white/5 backdrop-blur-md">
-            <CardHeader className="p-4 pb-2">
+        <Card className="rounded-xl border-white/15 bg-white/5 backdrop-blur-md">
+            <CardHeader className="p-2.5 pb-2">
                 <CardTitle className="text-sm font-medium text-gray-200">Portfolio Activity</CardTitle>
             </CardHeader>
-            <CardContent className="p-4 pt-2">
+            <CardContent className="p-2.5 pt-2">
                 <Tabs defaultValue="daily" className="w-full">
                     <TabsList>
                         <TabsTrigger value="daily">Daily</TabsTrigger>

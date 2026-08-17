@@ -31,6 +31,7 @@ import paymentRoutes from "./routes/payment.js";
 import brokerRoutes from "./routes/broker.js";
 import notificationRoutes from "./routes/notifications.js";
 import priceRoutes from "./routes/prices.js";
+import offerRoutes from "./routes/offers.js";
 import supportRoutes from "./routes/support.js";
 import healthRoutes from "./routes/health.js";
 import emailRoutes from "./routes/email.js";
@@ -166,6 +167,8 @@ app.use("/api/payment", paymentRoutes);
 app.use("/api/broker", brokerRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/prices", priceRoutes);
+// Public, display-only promotional banners; writes are admin-only under /api/admin/offers.
+app.use("/api/offers", offerRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/health", healthRoutes);
 app.use("/api/email", emailRoutes);

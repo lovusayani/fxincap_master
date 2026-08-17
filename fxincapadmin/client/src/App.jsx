@@ -19,6 +19,7 @@ import { UserKycStatus } from './pages/UserKycStatus'
 import { TradeSetting } from './pages/TradeSetting'
 import { GroupSetting } from './pages/GroupSetting'
 import { ForexCharges } from './pages/ForexCharges'
+import { HeroBanners } from './pages/HeroBanners'
 import { MiscellaneousSettings } from './pages/MiscellaneousSettings'
 import { Offers } from './pages/Offers'
 import { Wallet } from './pages/Wallet'
@@ -69,6 +70,7 @@ function App() {
             <Route path="group-setting" element={<GroupSetting />} />
             <Route path="account-types" element={<AccountTypes />} />
             <Route path="forex-charges" element={<ForexCharges />} />
+            <Route path="hero-banners" element={<HeroBanners />} />
             <Route path="market/offers" element={<Offers />} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="server-settings" element={<ServerSettings />} />

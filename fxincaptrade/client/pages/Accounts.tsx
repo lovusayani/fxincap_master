@@ -259,19 +259,39 @@ export default function AccountsPage() {
           <span>Free <span className="text-gray-200">{formatMoney(acct.freeMargin, acct.currency)}</span></span>
         </div>
 
-        {isCurrent ? (
-          <div className="mt-2 w-full rounded-md bg-emerald-600 py-1 text-center text-[10px] font-bold uppercase text-white">
-            Active
-          </div>
-        ) : (
-          <Button
-            onClick={() => tradeOnAccount(acct)}
-            disabled={switchingId === acct.id}
-            className="mt-2 h-7 w-full rounded-md bg-blue-600 text-[10px] font-bold uppercase text-white hover:bg-blue-700"
-          >
-            {switchingId === acct.id ? "…" : "Trade"}
-          </Button>
-        )}
+        <div className="mt-2 grid grid-cols-2 gap-1.5">
+          {isCurrent ? (
+            <div className="rounded-md bg-emerald-600 py-1.5 text-center text-[10px] font-bold uppercase text-white">
+              Active
+            </div>
+          ) : (
+            <Button
+              onClick={() => tradeOnAccount(acct)}
+              disabled={switchingId === acct.id}
+              className="h-7 rounded-md bg-blue-600 text-[10px] font-bold uppercase text-white hover:bg-blue-700"
+            >
+              {switchingId === acct.id ? "…" : "Trade"}
+            </Button>
+          )}
+
+          {/* Deep-links into the deposit form with this account preselected.
+              Demo accounts cannot take a real deposit. */}
+          {isReal ? (
+            <Button
+              onClick={() => navigate(`/deposit?account=${encodeURIComponent(acct.id)}`)}
+              className="h-7 rounded-md bg-white/10 text-[10px] font-bold uppercase text-gray-100 hover:bg-white/20"
+            >
+              + Balance
+            </Button>
+          ) : (
+            <div
+              title="Demo accounts cannot be funded"
+              className="rounded-md bg-white/5 py-1.5 text-center text-[10px] font-bold uppercase text-gray-600"
+            >
+              + Balance
+            </div>
+          )}
+        </div>
       </div>
     );
   };

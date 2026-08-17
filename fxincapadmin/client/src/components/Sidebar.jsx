@@ -161,6 +161,7 @@ const menus = [
     label: 'Trade Master', icon: 'monitoring', children: [
       { label: 'Trade History', path: '/trade-setting' },
       { label: 'Trade Settings', path: '/forex-charges' },
+      { label: 'Hero Banners', path: '/hero-banners' },
     ]
   },
   {

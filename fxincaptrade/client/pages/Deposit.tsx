@@ -35,7 +35,19 @@ type DepositRow = {
     method?: string | null;
     paymentChain?: string | null;
     promoCode?: string | null;
+    accountNumber?: string | null;
+    accountMode?: string | null;
     createdAt: string;
+};
+
+/** Accounts a deposit can be credited to. */
+type DepositAccount = {
+    id: string;
+    accountNumber: string;
+    accountTypeName: string;
+    tradingMode: "real" | "demo";
+    balance: number;
+    currency: string;
 };
 
 const formatMoney = (amount: number, currency = "USD") =>
@@ -68,6 +80,11 @@ export default function DepositPage() {
     const [remarks, setRemarks] = useState("");
     const [screenshot, setScreenshot] = useState<File | null>(null);
     const [screenshotError, setScreenshotError] = useState("");
+
+    // Which account the money should land in. Traders can hold several, so this
+    // must be chosen explicitly rather than inferred at approval time.
+    const [accounts, setAccounts] = useState<DepositAccount[]>([]);
+    const [selectedAccountId, setSelectedAccountId] = useState("");
 
     const [chains, setChains] = useState<ChainConfig[]>([]);
     const [offers, setOffers] = useState<DepositOffer[]>([]);
@@ -139,8 +156,50 @@ export default function DepositPage() {
         }
     };
 
+    const loadAccounts = async () => {
+        try {
+            const response = await fetch(apiUrl("/api/user/accounts"), { headers: authHeaders });
+            if (!response.ok) return;
+            const json = await response.json();
+            const rows: DepositAccount[] = (Array.isArray(json?.data) ? json.data : []).map((row: any) => ({
+                id: String(row.id),
+                accountNumber: row.accountNumber || row.account_number || "",
+                accountTypeName: row.accountTypeName || row.account_type_name || "Standard",
+                tradingMode: (row.tradingMode || row.trading_mode || "demo") as "real" | "demo",
+                balance: Number(row.balance || 0),
+                currency: String(row.currency || "USD"),
+            }));
+            // Demo accounts cannot be funded by a real deposit.
+            const depositable = rows.filter((row) => row.tradingMode === "real");
+            setAccounts(depositable);
+
+            // ?account= lets My Accounts deep-link straight into a deposit for a
+            // specific account, opening the form without a second click.
+            const fromQuery = new URLSearchParams(window.location.search).get("account");
+            const deepLinked = fromQuery && depositable.some((row) => row.id === fromQuery) ? fromQuery : "";
+
+            setSelectedAccountId((current) => {
+                if (deepLinked) return deepLinked;
+                if (current && depositable.some((row) => row.id === current)) return current;
+                return depositable[0]?.id || "";
+            });
+
+            if (deepLinked) {
+                setShowModal(true);
+                // Consume the parameter so closing the modal and refreshing does
+                // not silently reopen it.
+                const url = new URL(window.location.href);
+                url.searchParams.delete("account");
+                window.history.replaceState({}, "", url.pathname + url.search);
+            }
+        } catch {
+            setAccounts([]);
+        }
+    };
+
     useEffect(() => {
         void loadAccount();
+        void loadAccounts();
         void loadPaymentConfig();
         void loadOffers();
         void loadDepositRows();
@@ -190,6 +249,13 @@ export default function DepositPage() {
     };
 
     const submitDeposit = async () => {
+        // Guard only when there is a real choice to make; a lone account is
+        // preselected and cannot be wrong.
+        if (accounts.length > 1 && !selectedAccountId) {
+            setMessage({ text: "Choose which account to deposit into", ok: false });
+            return;
+        }
+
         const parsedAmount = Number(amount);
         if (!parsedAmount || parsedAmount <= 0) {
             setMessage({ text: "Please enter a valid amount", ok: false });
@@ -228,6 +294,9 @@ export default function DepositPage() {
             formData.append("cryptoSymbol", "USDT");
             formData.append("walletAddress", selectedChain?.walletAddress || "");
             formData.append("remarks", remarks);
+            if (selectedAccountId) {
+                formData.append("accountId", selectedAccountId);
+            }
             if (promoCode.trim()) {
                 formData.append("promoCode", promoCode.trim());
             }
@@ -366,6 +435,7 @@ export default function DepositPage() {
                                 <thead>
                                     <tr className="border-b border-white/10 text-left text-gray-400">
                                         <th className="px-3 py-2 font-medium">Reference</th>
+                                        <th className="px-3 py-2 font-medium">Account</th>
                                         <th className="px-3 py-2 font-medium">Amount</th>
                                         <th className="px-3 py-2 font-medium">Method</th>
                                         <th className="px-3 py-2 font-medium">Chain</th>
@@ -378,6 +448,14 @@ export default function DepositPage() {
                                     {depositRows.map((row) => (
                                         <tr key={row.id} className="border-b border-white/5">
                                             <td className="px-3 py-2 text-gray-200">{row.reference || row.id}</td>
+                                            <td className="px-3 py-2">
+                                                {row.accountNumber ? (
+                                                    <span className="font-mono text-xs text-gray-300">{row.accountNumber}</span>
+                                                ) : (
+                                                    // Requests raised before the account chooser existed.
+                                                    <span className="text-xs text-gray-600">—</span>
+                                                )}
+                                            </td>
                                             <td className="px-3 py-2 text-white">{formatMoney(Number(row.amount || 0))}</td>
                                             <td className="px-3 py-2 text-gray-300">{row.paymentMethod || row.method || "-"}</td>
                                             <td className="px-3 py-2 text-gray-300">{row.paymentChain || "-"}</td>
@@ -409,8 +487,13 @@ export default function DepositPage() {
 
                 {showModal && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-                        <div className="w-full max-w-2xl rounded-xl border border-white/10 bg-[#0d1117] p-4 shadow-2xl">
-                            <div className="mb-3 flex items-center justify-between">
+                        {/* Single scroll region: the panel caps at 90vh and its body
+                            flexes, so a scrollbar appears only when the viewport is
+                            genuinely too short. Previously the panel was unbounded
+                            while the body forced its own bar at 70vh — two nested
+                            scroll areas, one of them always visible. */}
+                        <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-white/10 bg-[#0d1117] p-4 shadow-2xl">
+                            <div className="mb-3 flex shrink-0 items-center justify-between">
                                 <h2 className="text-lg font-semibold text-white">Add Balance</h2>
                                 <button
                                     type="button"
@@ -422,12 +505,41 @@ export default function DepositPage() {
                             </div>
 
                             {showModal && message && (
-                                <div className={`mb-3 rounded-lg p-3 text-sm ${message.ok ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                                <div className={`mb-3 shrink-0 rounded-lg p-3 text-sm ${message.ok ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
                                     {message.text}
                                 </div>
                             )}
 
-                            <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+                            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+                                {/* Which account the funds are credited to. Shown as a
+                                    picker only when the trader holds more than one; a
+                                    single account needs no decision. */}
+                                {accounts.length > 0 && (
+                                    <div>
+                                        <label className="mb-1 block text-xs text-gray-400">
+                                            Deposit To {accounts.length > 1 && <span className="text-red-400">*</span>}
+                                        </label>
+                                        {accounts.length === 1 ? (
+                                            <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2.5">
+                                                <p className="text-sm font-semibold text-white">{accounts[0].accountTypeName}</p>
+                                                <p className="font-mono text-[11px] text-gray-400">{accounts[0].accountNumber}</p>
+                                            </div>
+                                        ) : (
+                                            <select
+                                                value={selectedAccountId}
+                                                onChange={(event) => setSelectedAccountId(event.target.value)}
+                                                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-white focus:border-blue-400 focus:outline-none"
+                                            >
+                                                {accounts.map((acct) => (
+                                                    <option key={acct.id} value={acct.id} className="bg-slate-900">
+                                                        {acct.accountTypeName} — {acct.accountNumber} ({formatMoney(acct.balance, acct.currency)})
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        )}
+                                    </div>
+                                )}
+
                                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                     <div>
                                         <label className="mb-1 block text-xs text-gray-400">Amount</label>
@@ -545,20 +657,23 @@ export default function DepositPage() {
                                     </div>
                                 </div>
 
-                                <div className="flex gap-2 justify-end">
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        onClick={() => setShowModal(false)}
-                                        className="h-10 rounded-lg border-white/15 text-gray-200 hover:bg-white/10"
-                                        disabled={submitting}
-                                    >
-                                        Cancel
-                                    </Button>
-                                    <Button type="button" onClick={submitDeposit} disabled={submitting} className="h-10 rounded-lg">
-                                        {submitting ? "Submitting..." : "Submit Deposit"}
-                                    </Button>
-                                </div>
+                            </div>
+
+                            {/* Outside the scroll region so the actions stay put
+                                instead of scrolling away with the form. */}
+                            <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-white/10 pt-3">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => setShowModal(false)}
+                                    className="h-10 rounded-lg border-white/15 text-gray-200 hover:bg-white/10"
+                                    disabled={submitting}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button type="button" onClick={submitDeposit} disabled={submitting} className="h-10 rounded-lg">
+                                    {submitting ? "Submitting..." : "Submit Deposit"}
+                                </Button>
                             </div>
                         </div>
                     </div>
