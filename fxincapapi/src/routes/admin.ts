@@ -23,6 +23,13 @@ import {
   resolveActiveAccountId,
 } from "../lib/trading-engine.js";
 import { getSettlementPrice } from "../lib/market-price.js";
+import {
+  ensureOfferBannersTable,
+  listOfferBanners,
+  createOfferBanner,
+  updateOfferBanner,
+  deleteOfferBanner,
+} from "../lib/offer-banners.js";
 import { getConnection, query } from "../lib/database.js";
 import { JWT_SECRET } from "../lib/env.js";
 import { v4 as uuidv4 } from "uuid";
@@ -66,6 +73,35 @@ const uploadLogo = multer({
     cb(new Error("Only PNG files are allowed"));
   },
 });
+
+/* Offer banner uploads — same disk-storage pattern as logos, own directory. */
+const offerUploadDir = path.join(__adminDirname, "../../uploads/offers");
+if (!fs.existsSync(offerUploadDir)) {
+  fs.mkdirSync(offerUploadDir, { recursive: true });
+}
+
+const uploadOfferImage = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, offerUploadDir),
+    filename: (_req, file, cb) => {
+      const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+      cb(null, `offer-${unique}${path.extname(file.originalname)}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    // Wider than the logo filter: hero art is commonly JPEG or WebP.
+    if (/^image\/(png|jpeg|jpg|webp|gif)$/.test(file.mimetype)) return cb(null, true);
+    cb(new Error("Only PNG, JPEG, WebP or GIF images are allowed"));
+  },
+});
+
+/** Only removes files we own, so a bad row cannot delete something else. */
+const resolveOfferFilePath = (imageUrl: string | null | undefined) => {
+  const normalized = String(imageUrl || "").trim();
+  if (!normalized.startsWith("/uploads/offers/")) return null;
+  return path.join(offerUploadDir, path.basename(normalized));
+};
 
 const logoDimensionsByType: Record<string, { width: number; height: number }> = {
   light: { width: 162, height: 52 },
@@ -2600,6 +2636,99 @@ router.post("/trades", async (req: AuthRequest, res: Response) => {
     }
 
     res.json({ success: true, tradeId: created.tradeId, symbol, side, volume, entryPrice, leverage });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Offer banners — hero images on the trader dashboard
+ *
+ * Admin-only CRUD. The trading client reads the enabled ones from the public
+ * GET /api/offers (see routes/offers.ts).
+ * ------------------------------------------------------------------ */
+
+router.get("/offers", async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureOfferBannersTable();
+    res.json({ success: true, data: await listOfferBanners() });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/offers", uploadOfferImage.single("image"), async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureOfferBannersTable();
+
+    // Either an uploaded file or an external URL, but one of them is required.
+    const uploaded = req.file ? `/uploads/offers/${req.file.filename}` : null;
+    const provided = String(req.body?.imageUrl ?? "").trim();
+    const imageUrl = uploaded || provided;
+
+    if (!imageUrl) {
+      return res.status(400).json({ success: false, error: "An image file or imageUrl is required" });
+    }
+
+    const sortOrderRaw = Number(req.body?.sortOrder);
+    const banner = await createOfferBanner({
+      imageUrl,
+      title: req.body?.title?.trim() || null,
+      subtitle: req.body?.subtitle?.trim() || null,
+      linkUrl: req.body?.linkUrl?.trim() || null,
+      sortOrder: Number.isFinite(sortOrderRaw) ? sortOrderRaw : 0,
+      enabled: req.body?.enabled === undefined ? true : String(req.body.enabled) !== "false",
+    });
+
+    res.json({ success: true, data: banner });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch("/offers/:id", async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid banner id" });
+    }
+
+    const patch: any = {};
+    if (req.body?.title !== undefined) patch.title = req.body.title?.trim() || null;
+    if (req.body?.subtitle !== undefined) patch.subtitle = req.body.subtitle?.trim() || null;
+    if (req.body?.linkUrl !== undefined) patch.linkUrl = req.body.linkUrl?.trim() || null;
+    if (req.body?.enabled !== undefined) patch.enabled = Boolean(req.body.enabled);
+    if (req.body?.sortOrder !== undefined) {
+      const n = Number(req.body.sortOrder);
+      if (!Number.isFinite(n)) return res.status(400).json({ success: false, error: "sortOrder must be a number" });
+      patch.sortOrder = n;
+    }
+
+    const updated = await updateOfferBanner(id, patch);
+    if (!updated) return res.status(404).json({ success: false, error: "Banner not found or nothing to update" });
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete("/offers/:id", async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid banner id" });
+    }
+
+    const removed = await deleteOfferBanner(id);
+    if (!removed) return res.status(404).json({ success: false, error: "Banner not found" });
+
+    // Best-effort file cleanup; a missing file must not fail the request.
+    const filePath = resolveOfferFilePath(removed.imageUrl);
+    if (filePath) {
+      fs.promises.unlink(filePath).catch(() => {});
+    }
+
+    res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

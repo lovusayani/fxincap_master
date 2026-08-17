@@ -1,19 +1,19 @@
 import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-type BalanceSummary = {
+export type AccountSummary = {
+    id: string;
+    accountNumber: string;
+    accountTypeName: string;
+    tradingMode: "real" | "demo";
     balance: number;
-    equity: number;
-    margin: number;
-    freeMargin: number;
     currency: string;
-    accountNumber?: string;
-    isAvailable: boolean;
+    isActive: boolean;
 };
 
 interface BalanceCardProps {
-    realBalance: BalanceSummary;
-    demoBalance: BalanceSummary;
+    accounts: AccountSummary[];
+    loading?: boolean;
 }
 
 function formatCurrency(value: number, currency: string) {
@@ -25,70 +25,70 @@ function formatCurrency(value: number, currency: string) {
     }).format(value);
 }
 
-function BalancePanel({
-    label,
-    balance,
-    tone,
-}: {
-    label: string;
-    balance: BalanceSummary;
-    tone: string;
-}) {
-    return (
-        <div className="rounded-2xl border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
-            <div className="flex items-center justify-between gap-3">
-                <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-gray-400">{label}</p>
-                    <p className={`mt-3 text-3xl font-bold tracking-tight sm:text-4xl ${tone}`}>
-                        {balance.isAvailable ? formatCurrency(balance.balance, balance.currency) : "Unavailable"}
-                    </p>
-                </div>
-                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-gray-300">
-                    {balance.accountNumber || "No account"}
-                </span>
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-xs uppercase tracking-[0.18em] text-gray-500">Balance</p>
-                    <p className="mt-2 font-semibold text-white">
-                        {balance.isAvailable ? formatCurrency(balance.balance, balance.currency) : "--"}
-                    </p>
-                </div>
-                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-xs uppercase tracking-[0.18em] text-gray-500">Equity</p>
-                    <p className="mt-2 font-semibold text-white">
-                        {balance.isAvailable ? formatCurrency(balance.equity, balance.currency) : "--"}
-                    </p>
-                </div>
-                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-xs uppercase tracking-[0.18em] text-gray-500">Margin</p>
-                    <p className="mt-2 font-semibold text-white">
-                        {balance.isAvailable ? formatCurrency(balance.margin, balance.currency) : "--"}
-                    </p>
-                </div>
-                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-xs uppercase tracking-[0.18em] text-gray-500">Free Margin</p>
-                    <p className="mt-2 font-semibold text-white">
-                        {balance.isAvailable ? formatCurrency(balance.freeMargin, balance.currency) : "--"}
-                    </p>
-                </div>
-            </div>
-        </div>
-    );
-}
+/**
+ * Compact summary of every account the trader holds: a combined total, then one
+ * line per account.
+ *
+ * Previously this card read /api/user/balance?mode=real|demo, which returns a
+ * single balance per mode — so a trader with four accounts only ever saw two.
+ * It now takes the full list from /api/user/accounts.
+ */
+export function BalanceCard({ accounts, loading = false }: BalanceCardProps) {
+    const currency = accounts[0]?.currency || "USD";
+    const total = accounts.reduce((sum, a) => sum + a.balance, 0);
 
-export function BalanceCard({ realBalance, demoBalance }: BalanceCardProps) {
     return (
-        <Card className="relative overflow-hidden rounded-2xl border-white/15 bg-white/5 backdrop-blur-md">
-            <div className="pointer-events-none absolute inset-x-0 top-0 h-28 rounded-t-2xl bg-gradient-to-r from-emerald-500/20 via-cyan-500/10 to-blue-500/20" />
-            <CardHeader className="p-4 pb-2">
-                <CardTitle className="text-sm font-medium text-gray-300">Account Balances</CardTitle>
+        <Card className="relative h-full overflow-hidden rounded-xl border-white/15 bg-white/5 backdrop-blur-md">
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-16 rounded-t-xl bg-gradient-to-r from-emerald-500/20 via-cyan-500/10 to-blue-500/20" />
+
+            <CardHeader className="p-2.5 pb-1">
+                <CardTitle className="text-xs font-medium text-gray-300">Account Balances</CardTitle>
             </CardHeader>
-            <CardContent className="relative p-4 pt-1">
-                <div className="grid gap-4 lg:grid-cols-2">
-                    <BalancePanel label="Real" balance={realBalance} tone="text-emerald-300" />
-                    <BalancePanel label="TDemo" balance={demoBalance} tone="text-sky-300" />
+
+            <CardContent className="relative p-2.5 pt-0">
+                {/* Total sits above the per-account lines. */}
+                <div className="flex items-baseline justify-between gap-2 border-b border-white/10 pb-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-gray-400">Total</span>
+                    <span className="text-2xl font-bold leading-none tracking-tight text-emerald-300 tabular-nums">
+                        {formatCurrency(total, currency)}
+                    </span>
                 </div>
+
+                {loading ? (
+                    <p className="py-3 text-xs text-gray-500">Loading accounts…</p>
+                ) : accounts.length === 0 ? (
+                    <p className="py-3 text-xs text-gray-500">No accounts yet.</p>
+                ) : (
+                    <ul className="mt-1.5 space-y-1">
+                        {accounts.map((acct, index) => (
+                            <li
+                                key={acct.id}
+                                className="flex items-center justify-between gap-2 rounded-md px-1.5 py-1 hover:bg-white/5"
+                            >
+                                <span className="flex min-w-0 items-center gap-1.5">
+                                    <span className="text-xs font-medium text-gray-200">Acc {index + 1}</span>
+                                    <span
+                                        className={`shrink-0 rounded px-1 py-px text-[9px] font-semibold uppercase ${
+                                            acct.tradingMode === "real"
+                                                ? "bg-emerald-500/15 text-emerald-300"
+                                                : "bg-amber-500/15 text-amber-300"
+                                        }`}
+                                    >
+                                        {acct.tradingMode}
+                                    </span>
+                                    {acct.isActive && (
+                                        <span className="shrink-0 rounded bg-blue-500/15 px-1 py-px text-[9px] font-semibold uppercase text-blue-300">
+                                            Active
+                                        </span>
+                                    )}
+                                </span>
+                                <span className="shrink-0 text-xs font-semibold text-white tabular-nums">
+                                    {formatCurrency(acct.balance, acct.currency)}
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                )}
             </CardContent>
         </Card>
     );

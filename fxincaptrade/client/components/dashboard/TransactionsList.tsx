@@ -12,15 +12,15 @@ const txs = [
 
 export function TransactionsList() {
     return (
-        <Card className="rounded-2xl border-white/15 bg-white/5 backdrop-blur-md">
-            <CardHeader className="p-4 pb-2">
+        <Card className="rounded-xl border-white/15 bg-white/5 backdrop-blur-md">
+            <CardHeader className="p-2.5 pb-2">
                 <CardTitle className="text-sm font-medium text-gray-200">Recent Transactions</CardTitle>
             </CardHeader>
-            <CardContent className="p-4 pt-2">
-                <div className="space-y-3">
+            <CardContent className="p-2.5 pt-2">
+                <div className="space-y-2">
                     {txs.map(({ id, coin, amount, type, Icon }) => (
-                        <div key={id} className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 p-3">
-                            <div className="flex items-center gap-3">
+                        <div key={id} className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 p-2">
+                            <div className="flex items-center gap-2">
                                 <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-gray-200">
                                     <Icon className="h-4 w-4" />
                                 </span>

@@ -17,12 +17,12 @@ interface ActionGridProps {
 
 export function ActionGrid({ onAction }: ActionGridProps) {
     return (
-        <div className="grid grid-cols-3 gap-2 sm:gap-3">
+        <div className="grid grid-cols-3 gap-2 sm:gap-2">
             {actions.map(({ key, label, Icon }) => (
                 <Button
                     key={key}
                     variant="outline"
-                    className="h-20 rounded-2xl border-white/15 bg-white/5 text-gray-100 hover:bg-white/10"
+                    className="h-20 rounded-xl border-white/15 bg-white/5 text-gray-100 hover:bg-white/10"
                     onClick={() => onAction?.(key)}
                 >
                     <span className="flex flex-col items-center gap-1 text-center">

@@ -998,9 +998,31 @@ router.post("/fund-request", verifyToken, uploadDeposit.single("screenshot"), as
       paymentChain,
       promoCode,
       remarks,
+      accountId,
     } = req.body;
     const numericAmount = parseFloat(amount as any);
     const safeMethod = method || "crypto";
+
+    /**
+     * Target account for this request.
+     *
+     * Traders can hold several accounts, so the request must record which one
+     * the money is for — otherwise approval credits whichever real account
+     * happens to come back first. Validated against the caller's own accounts
+     * so a supplied id cannot point at somebody else's.
+     */
+    let targetAccountId: string | null = null;
+    const requestedAccountId = String(accountId || "").trim();
+    if (requestedAccountId) {
+      const owned: any = await query(
+        "SELECT id FROM user_accounts WHERE id = ? AND user_id = ? LIMIT 1",
+        [requestedAccountId, userId]
+      );
+      if (!Array.isArray(owned) || owned.length === 0) {
+        return res.status(400).json({ success: false, error: "Selected account not found" });
+      }
+      targetAccountId = owned[0].id;
+    }
 
     console.log("===== FUND REQUEST DEBUG =====");
     console.log("Body:", req.body);
@@ -1100,6 +1122,9 @@ router.post("/fund-request", verifyToken, uploadDeposit.single("screenshot"), as
     const insertColumns = [
       "id",
       "user_id",
+      // Records which of the trader's accounts this deposit is for. Previously
+      // omitted, which left approval to guess.
+      "account_id",
       "type",
       "amount",
       "method",
@@ -1111,6 +1136,7 @@ router.post("/fund-request", verifyToken, uploadDeposit.single("screenshot"), as
     const insertValues: any[] = [
       id,
       userId,
+      targetAccountId,
       type,
       numericAmount,
       safeMethod,
@@ -1294,15 +1320,29 @@ router.post("/fund-request", verifyToken, uploadDeposit.single("screenshot"), as
 router.get("/fund-requests", verifyToken, async (req: AuthRequest, res) => {
   try {
     const fundRequestColumns = await getFundRequestColumns();
-    const paymentMethodExpr = fundRequestColumns.has("payment_method") ? "payment_method" : "NULL AS payment_method";
-    const paymentChainExpr = fundRequestColumns.has("payment_chain") ? "payment_chain" : "NULL AS payment_chain";
-    const promoCodeExpr = fundRequestColumns.has("promo_code") ? "promo_code" : "NULL AS promo_code";
-    const promoDiscountExpr = fundRequestColumns.has("promo_discount_percent") ? "promo_discount_percent" : "NULL AS promo_discount_percent";
-    const remarksExpr = fundRequestColumns.has("remarks") ? "remarks" : "NULL AS remarks";
+    // Optional columns are aliased with the fr. prefix up front, so the SELECT
+    // below stays readable now that it joins user_accounts.
+    const optionalCol = (name: string) =>
+      fundRequestColumns.has(name) ? `fr.${name}` : `NULL AS ${name}`;
+    const paymentMethodExpr = optionalCol("payment_method");
+    const paymentChainExpr = optionalCol("payment_chain");
+    const promoCodeExpr = optionalCol("promo_code");
+    const promoDiscountExpr = optionalCol("promo_discount_percent");
+    const remarksExpr = optionalCol("remarks");
 
     const userId = req.user?.id;
     const results = await query(
-      `SELECT id, type, amount, status, method, ${paymentMethodExpr}, ${paymentChainExpr}, ${promoCodeExpr}, ${promoDiscountExpr}, ${remarksExpr}, crypto_chain, crypto_address, reference_number, created_at, notes FROM fund_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`,
+      // Joined to user_accounts so the report can name the account the money is for.
+      `SELECT fr.id, fr.type, fr.amount, fr.status, fr.method,
+              ${paymentMethodExpr}, ${paymentChainExpr}, ${promoCodeExpr},
+              ${promoDiscountExpr}, ${remarksExpr},
+              fr.crypto_chain, fr.crypto_address, fr.reference_number, fr.created_at, fr.notes,
+              ua.account_number, ua.trading_mode AS account_mode
+         FROM fund_requests fr
+         LEFT JOIN user_accounts ua ON ua.id = fr.account_id
+        WHERE fr.user_id = ?
+        ORDER BY fr.created_at DESC
+        LIMIT 50`,
       [userId]
     );
     const requests = Array.isArray(results)
@@ -1321,6 +1361,8 @@ router.get("/fund-requests", verifyToken, async (req: AuthRequest, res) => {
           walletAddress: r.crypto_address,
           reference: r.reference_number,
           notes: r.notes,
+          accountNumber: r.account_number || null,
+          accountMode: r.account_mode || null,
           createdAt: r.created_at,
         }))
       : [];

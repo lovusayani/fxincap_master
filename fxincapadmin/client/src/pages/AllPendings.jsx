@@ -144,6 +144,24 @@ export const AllPendings = () => {
         cell: (info) => `#${info.getValue()}`,
       },
       {
+        // Which of the trader's accounts the funds are credited to. Null on
+        // requests raised before the account chooser existed.
+        accessorKey: 'accountNumber',
+        header: 'Account',
+        cell: (info) => {
+          const row = info.row.original
+          if (!row.accountNumber) return <span className="text-slate-500">—</span>
+          return (
+            <div className="leading-tight">
+              <div className="font-mono text-xs text-slate-200">{row.accountNumber}</div>
+              <div className="text-[10px] uppercase text-slate-500">
+                {row.accountTypeName || row.accountMode || ''}
+              </div>
+            </div>
+          )
+        },
+      },
+      {
         accessorKey: 'amount',
         header: 'Amount',
         cell: (info) => `$${parseFloat(info.getValue() || 0).toFixed(2)}`,
@@ -215,6 +233,23 @@ export const AllPendings = () => {
         accessorKey: 'userId',
         header: 'User ID',
         cell: (info) => `#${info.getValue()}`,
+      },
+      {
+        // The account the withdrawal is debited from — and refunded to if rejected.
+        accessorKey: 'accountNumber',
+        header: 'Account',
+        cell: (info) => {
+          const row = info.row.original
+          if (!row.accountNumber) return <span className="text-slate-500">—</span>
+          return (
+            <div className="leading-tight">
+              <div className="font-mono text-xs text-slate-200">{row.accountNumber}</div>
+              <div className="text-[10px] uppercase text-slate-500">
+                {row.accountTypeName || row.accountMode || ''}
+              </div>
+            </div>
+          )
+        },
       },
       {
         accessorKey: 'amount',

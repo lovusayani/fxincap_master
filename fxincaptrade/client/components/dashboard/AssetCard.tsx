@@ -10,12 +10,12 @@ const assets = [
 
 export function AssetCard() {
     return (
-        <Card className="rounded-2xl border-white/15 bg-white/5 backdrop-blur-md">
-            <CardHeader className="p-4 pb-2">
+        <Card className="rounded-xl border-white/15 bg-white/5 backdrop-blur-md">
+            <CardHeader className="p-2.5 pb-2">
                 <CardTitle className="text-sm font-medium text-gray-200">Asset Allocation</CardTitle>
             </CardHeader>
-            <CardContent className="p-4 pt-2">
-                <div className="grid grid-cols-12 gap-4">
+            <CardContent className="p-2.5 pt-2">
+                <div className="grid grid-cols-12 gap-2">
                     <div className="col-span-12 md:col-span-4">
                         <div className="mx-auto flex h-36 w-36 items-center justify-center rounded-full border-8 border-cyan-400/30 bg-gradient-to-br from-cyan-500/20 to-violet-500/20 text-xs text-gray-300">
                             Donut Chart
