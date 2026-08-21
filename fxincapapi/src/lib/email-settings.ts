@@ -1,24 +1,32 @@
 import { getAdmSettings, setAdmSetting } from "./adm-settings.js";
 
 export type EmailSettings = {
-  sendgridApiKey: string;
-  sendgridFrom: string;
+  mailgunApiKey: string;
+  mailgunDomain: string;
+  mailgunFrom: string;
+  mailgunRegion: "us" | "eu";
 };
 
-const DB_KEY_API_KEY = "sendgrid_api_key";
-const DB_KEY_FROM    = "sendgrid_from";
+const DB_KEY_API_KEY = "mailgun_api_key";
+const DB_KEY_DOMAIN  = "mailgun_domain";
+const DB_KEY_FROM    = "mailgun_from";
+const DB_KEY_REGION  = "mailgun_region";
 
 const envDefaults = (): EmailSettings => ({
-  sendgridApiKey: String(process.env.SENDGRID_API_KEY || "").trim(),
-  sendgridFrom:   String(process.env.SENDGRID_FROM    || "noreply@suimfx.com").trim(),
+  mailgunApiKey: String(process.env.MAILGUN_API_KEY || "").trim(),
+  mailgunDomain: String(process.env.MAILGUN_DOMAIN  || "").trim(),
+  mailgunFrom:   String(process.env.MAILGUN_FROM     || "noreply@suimfx.com").trim(),
+  mailgunRegion: (String(process.env.MAILGUN_REGION || "us").trim().toLowerCase() === "eu" ? "eu" : "us"),
 });
 
 export const getStoredEmailSettings = async (): Promise<EmailSettings> => {
-  const db  = await getAdmSettings([DB_KEY_API_KEY, DB_KEY_FROM]);
+  const db  = await getAdmSettings([DB_KEY_API_KEY, DB_KEY_DOMAIN, DB_KEY_FROM, DB_KEY_REGION]);
   const env = envDefaults();
   return {
-    sendgridApiKey: db[DB_KEY_API_KEY] ?? env.sendgridApiKey,
-    sendgridFrom:   db[DB_KEY_FROM] ?? (env.sendgridFrom || "noreply@suimfx.com"),
+    mailgunApiKey: db[DB_KEY_API_KEY] ?? env.mailgunApiKey,
+    mailgunDomain: db[DB_KEY_DOMAIN] ?? env.mailgunDomain,
+    mailgunFrom:   db[DB_KEY_FROM] ?? (env.mailgunFrom || "noreply@suimfx.com"),
+    mailgunRegion: (db[DB_KEY_REGION] ?? env.mailgunRegion) === "eu" ? "eu" : "us",
   };
 };
 
@@ -27,12 +35,18 @@ export const saveStoredEmailSettings = async (
 ): Promise<EmailSettings> => {
   const current = await getStoredEmailSettings();
   const next: EmailSettings = {
-    sendgridApiKey: String(settings.sendgridApiKey ?? current.sendgridApiKey ?? "").trim(),
-    sendgridFrom:   String(settings.sendgridFrom   ?? current.sendgridFrom   ?? "noreply@suimfx.com").trim(),
+    mailgunApiKey: String(settings.mailgunApiKey ?? current.mailgunApiKey ?? "").trim(),
+    mailgunDomain: String(settings.mailgunDomain ?? current.mailgunDomain ?? "").trim(),
+    mailgunFrom:   String(settings.mailgunFrom   ?? current.mailgunFrom   ?? "noreply@suimfx.com").trim(),
+    mailgunRegion: settings.mailgunRegion === "eu" || settings.mailgunRegion === "us"
+      ? settings.mailgunRegion
+      : current.mailgunRegion,
   };
   await Promise.all([
-    setAdmSetting(DB_KEY_API_KEY, next.sendgridApiKey),
-    setAdmSetting(DB_KEY_FROM,    next.sendgridFrom),
+    setAdmSetting(DB_KEY_API_KEY, next.mailgunApiKey),
+    setAdmSetting(DB_KEY_DOMAIN,  next.mailgunDomain),
+    setAdmSetting(DB_KEY_FROM,    next.mailgunFrom),
+    setAdmSetting(DB_KEY_REGION,  next.mailgunRegion),
   ]);
   return next;
 };

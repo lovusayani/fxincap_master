@@ -5,7 +5,7 @@ const router: Router = Router();
 
 /**
  * POST /api/email/send
- * Public endpoint to send emails via SendGrid
+ * Public endpoint to send emails via the configured provider (Mailgun/SMTP)
  * 
  * Body:
  * {
@@ -60,8 +60,8 @@ router.post("/send", async (req: Request, res: Response) => {
     res.json({ success: true, message: "Email sent successfully" });
   } catch (error: any) {
     console.error("[EMAIL] Send error:", error);
-    if (error?.response?.body) {
-      console.error("[EMAIL] SendGrid response body:", error.response.body);
+    if (error?.details) {
+      console.error("[EMAIL] Mailgun error details:", error.details);
     }
     res.status(500).json({
       success: false,

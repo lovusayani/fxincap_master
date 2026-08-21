@@ -760,7 +760,7 @@ const saveStoredShadcnTheme = async (theme: string) => {
 
 router.get("/email-settings", verifyToken, async (_req: AuthRequest, res: Response) => {
   try {
-    const [sgSettings, smtpSettings, emailProvider] = await Promise.all([
+    const [mgSettings, smtpSettings, emailProvider] = await Promise.all([
       getStoredEmailSettings(),
       getStoredSmtpSettings(),
       getEmailProvider(),
@@ -768,10 +768,12 @@ router.get("/email-settings", verifyToken, async (_req: AuthRequest, res: Respon
     res.json({
       success: true,
       data: {
-        // SendGrid
-        sendgridFrom: sgSettings.sendgridFrom || "",
-        hasSendgridApiKey: Boolean(sgSettings.sendgridApiKey),
-        maskedSendgridApiKey: maskEmailApiKey(sgSettings.sendgridApiKey),
+        // Mailgun
+        mailgunDomain: mgSettings.mailgunDomain || "",
+        mailgunFrom: mgSettings.mailgunFrom || "",
+        mailgunRegion: mgSettings.mailgunRegion,
+        hasMailgunApiKey: Boolean(mgSettings.mailgunApiKey),
+        maskedMailgunApiKey: maskEmailApiKey(mgSettings.mailgunApiKey),
         // SMTP
         smtpHost:           smtpSettings.smtpHost,
         smtpPort:           smtpSettings.smtpPort,
@@ -794,19 +796,22 @@ router.post("/email-settings", verifyToken, async (req: AuthRequest, res: Respon
     const body = req.body ?? {};
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    // --- SendGrid ---
-    const sendgridFrom = String(body.sendgridFrom || "").trim();
-    if (sendgridFrom && !emailRegex.test(sendgridFrom)) {
-      return res.status(400).json({ success: false, error: "Enter a valid SendGrid from email address" });
+    // --- Mailgun ---
+    const mailgunFrom = String(body.mailgunFrom || "").trim();
+    if (mailgunFrom && !emailRegex.test(mailgunFrom)) {
+      return res.status(400).json({ success: false, error: "Enter a valid Mailgun from email address" });
     }
-    const currentSg = await getStoredEmailSettings();
-    const sendgridApiKeyInput = body.sendgridApiKey;
-    const nextApiKey = typeof sendgridApiKeyInput === "string" && sendgridApiKeyInput.trim()
-      ? sendgridApiKeyInput.trim()
-      : currentSg.sendgridApiKey;
-    const savedSg = await saveStoredEmailSettings({
-      sendgridApiKey: nextApiKey,
-      sendgridFrom: sendgridFrom || currentSg.sendgridFrom,
+    const currentMg = await getStoredEmailSettings();
+    const mailgunApiKeyInput = body.mailgunApiKey;
+    const nextApiKey = typeof mailgunApiKeyInput === "string" && mailgunApiKeyInput.trim()
+      ? mailgunApiKeyInput.trim()
+      : currentMg.mailgunApiKey;
+    const mailgunRegionInput = String(body.mailgunRegion || "").trim().toLowerCase();
+    const savedMg = await saveStoredEmailSettings({
+      mailgunApiKey: nextApiKey,
+      mailgunDomain: typeof body.mailgunDomain === "string" ? body.mailgunDomain.trim() : currentMg.mailgunDomain,
+      mailgunFrom: mailgunFrom || currentMg.mailgunFrom,
+      mailgunRegion: mailgunRegionInput === "eu" ? "eu" : mailgunRegionInput === "us" ? "us" : currentMg.mailgunRegion,
     });
 
     // --- SMTP ---
@@ -821,17 +826,19 @@ router.post("/email-settings", verifyToken, async (req: AuthRequest, res: Respon
 
     // --- Provider ---
     const providerInput = String(body.emailProvider || "").trim().toLowerCase();
-    if (providerInput === "smtp" || providerInput === "sendgrid") {
-      await setEmailProvider(providerInput as "smtp" | "sendgrid");
+    if (providerInput === "smtp" || providerInput === "mailgun") {
+      await setEmailProvider(providerInput as "smtp" | "mailgun");
     }
     const emailProvider = await getEmailProvider();
 
     res.json({
       success: true,
       data: {
-        sendgridFrom: savedSg.sendgridFrom,
-        hasSendgridApiKey: Boolean(savedSg.sendgridApiKey),
-        maskedSendgridApiKey: maskEmailApiKey(savedSg.sendgridApiKey),
+        mailgunDomain: savedMg.mailgunDomain,
+        mailgunFrom: savedMg.mailgunFrom,
+        mailgunRegion: savedMg.mailgunRegion,
+        hasMailgunApiKey: Boolean(savedMg.mailgunApiKey),
+        maskedMailgunApiKey: maskEmailApiKey(savedMg.mailgunApiKey),
         smtpHost:           savedSmtp.smtpHost,
         smtpPort:           savedSmtp.smtpPort,
         smtpSecure:         savedSmtp.smtpSecure,

@@ -26,7 +26,7 @@ router.get("/email-test", verifyToken, async (req: AuthRequest, res) => {
       verificationUrl: process.env.VERIFICATION_URL,
     });
 
-    res.json({ success: true, message: "Email sent via SendGrid" });
+    res.json({ success: true, message: "Email sent" });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message || "Email send failed" });
   }

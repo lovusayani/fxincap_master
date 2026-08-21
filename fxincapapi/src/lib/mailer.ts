@@ -1,18 +1,27 @@
 import fs from "fs";
 import path from "path";
-import sgMail, { MailDataRequired } from "@sendgrid/mail";
+import Mailgun from "mailgun.js";
+import FormData from "form-data";
 import nodemailer from "nodemailer";
 import { getStoredEmailSettings } from "./email-settings.js";
 import { getEmailProvider, getStoredSmtpSettings } from "./smtp-settings.js";
 
+const mailgun = new Mailgun(FormData);
+
 const getMailerConfig = async () => {
   const settings = await getStoredEmailSettings();
-  const sendgridApiKey = String(settings.sendgridApiKey || "").trim();
-  const sendgridFrom = String(settings.sendgridFrom || "noreply@suimfx.com").trim() || "noreply@suimfx.com";
-  if (sendgridApiKey) {
-    sgMail.setApiKey(sendgridApiKey);
-  }
-  return { sendgridApiKey, sendgridFrom };
+  const mailgunApiKey = String(settings.mailgunApiKey || "").trim();
+  const mailgunDomain = String(settings.mailgunDomain || "").trim();
+  const mailgunFrom = String(settings.mailgunFrom || "noreply@suimfx.com").trim() || "noreply@suimfx.com";
+  const mailgunRegion = settings.mailgunRegion === "eu" ? "eu" : "us";
+  const client = mailgunApiKey
+    ? mailgun.client({
+        username: "api",
+        key: mailgunApiKey,
+        url: mailgunRegion === "eu" ? "https://api.eu.mailgun.net" : "https://api.mailgun.net",
+      })
+    : null;
+  return { mailgunApiKey, mailgunDomain, mailgunFrom, client };
 };
 
 type DepositEmailPayload = {
@@ -41,17 +50,15 @@ const buildAttachment = (filePath?: string) => {
 
   const fileBuffer = fs.readFileSync(absolutePath);
   return {
-    content: fileBuffer.toString("base64"),
+    data: fileBuffer,
     filename: path.basename(absolutePath),
-    type: "application/octet-stream",
-    disposition: "attachment",
   };
 };
 
 export const sendDepositEmail = async (payload: DepositEmailPayload) => {
-  const { sendgridApiKey, sendgridFrom } = await getMailerConfig();
-  if (!sendgridApiKey) {
-    throw new Error("SENDGRID_API_KEY is not configured");
+  const { client, mailgunDomain, mailgunFrom } = await getMailerConfig();
+  if (!client || !mailgunDomain) {
+    throw new Error("MAILGUN_API_KEY / MAILGUN_DOMAIN is not configured");
   }
 
   const {
@@ -84,23 +91,18 @@ export const sendDepositEmail = async (payload: DepositEmailPayload) => {
     ${verificationUrl ? `<p><a href="${verificationUrl}">Open verification dashboard</a></p>` : ""}
   `;
 
-  const msg: MailDataRequired = {
-    to,
-    from: sendgridFrom,
-    subject: `New deposit request - Ref ${reference}`,
-    html: htmlBody,
-  };
-
-  if (attachment) {
-    msg.attachments = [attachment];
-  }
-
   try {
     console.log(`[MAILER] Sending deposit email to ${to} (ref ${reference})`);
-    await sgMail.send(msg);
+    await client.messages.create(mailgunDomain, {
+      to,
+      from: mailgunFrom,
+      subject: `New deposit request - Ref ${reference}`,
+      html: htmlBody,
+      ...(attachment ? { attachment: [attachment] } : {}),
+    });
     console.log(`[MAILER] Deposit email sent to ${to} (ref ${reference})`);
   } catch (err: any) {
-    console.error("[MAILER] Deposit email send error:", err?.response?.body || err);
+    console.error("[MAILER] Deposit email send error:", err?.message || err);
     throw err;
   }
 };
@@ -146,21 +148,21 @@ const sendViaSmtp = async (payload: GenericEmailPayload & { fromOverride?: strin
   await transporter.sendMail(mailOptions);
 };
 
-// ——— SendGrid single send ———
-const sendViaSendGrid = async (payload: GenericEmailPayload & { fromOverride?: string }): Promise<void> => {
-  const { sendgridApiKey, sendgridFrom } = await getMailerConfig();
-  if (!sendgridApiKey) throw new Error("SENDGRID_API_KEY is not configured");
-  const fromAddress = payload.fromOverride || sendgridFrom;
-  const msg: MailDataRequired = {
+// ——— Mailgun single send ———
+const sendViaMailgun = async (payload: GenericEmailPayload & { fromOverride?: string }): Promise<void> => {
+  const { client, mailgunDomain, mailgunFrom } = await getMailerConfig();
+  if (!client || !mailgunDomain) throw new Error("MAILGUN_API_KEY / MAILGUN_DOMAIN is not configured");
+  const fromAddress = payload.fromOverride || mailgunFrom;
+  const attachment = payload.attachments && payload.attachments.length > 0
+    ? payload.attachments.map((a) => ({ data: Buffer.from(a.content, "base64"), filename: a.filename }))
+    : undefined;
+  await client.messages.create(mailgunDomain, {
     to: payload.to,
     from: fromAddress,
     subject: payload.subject,
     html: payload.html,
-  };
-  if (payload.attachments && payload.attachments.length > 0) {
-    msg.attachments = payload.attachments;
-  }
-  await sgMail.send(msg);
+    ...(attachment ? { attachment } : {}),
+  });
 };
 
 export const sendEmail = async (payload: GenericEmailPayload) => {
@@ -173,28 +175,28 @@ export const sendEmail = async (payload: GenericEmailPayload) => {
       await sendViaSmtp(payload);
       console.log(`[MAILER] SMTP email sent to ${to}`);
     } catch (primaryErr: any) {
-      console.warn(`[MAILER] SMTP failed, falling back to SendGrid: ${primaryErr?.message}`);
+      console.warn(`[MAILER] SMTP failed, falling back to Mailgun: ${primaryErr?.message}`);
       try {
-        await sendViaSendGrid(payload);
-        console.log(`[MAILER] SendGrid fallback email sent to ${to}`);
+        await sendViaMailgun(payload);
+        console.log(`[MAILER] Mailgun fallback email sent to ${to}`);
       } catch (fallbackErr: any) {
-        console.error("[MAILER] Both SMTP and SendGrid failed", fallbackErr?.response?.body || fallbackErr);
+        console.error("[MAILER] Both SMTP and Mailgun failed", fallbackErr?.message || fallbackErr);
         throw fallbackErr;
       }
     }
   } else {
-    // provider === 'sendgrid' (default)
+    // provider === 'mailgun' (default)
     try {
-      console.log(`[MAILER] Sending email via SendGrid to ${to} (subject: ${subject})`);
-      await sendViaSendGrid(payload);
-      console.log(`[MAILER] SendGrid email sent to ${to}`);
+      console.log(`[MAILER] Sending email via Mailgun to ${to} (subject: ${subject})`);
+      await sendViaMailgun(payload);
+      console.log(`[MAILER] Mailgun email sent to ${to}`);
     } catch (primaryErr: any) {
-      console.warn(`[MAILER] SendGrid failed, falling back to SMTP: ${primaryErr?.message}`);
+      console.warn(`[MAILER] Mailgun failed, falling back to SMTP: ${primaryErr?.message}`);
       try {
         await sendViaSmtp(payload);
         console.log(`[MAILER] SMTP fallback email sent to ${to}`);
       } catch (fallbackErr: any) {
-        console.error("[MAILER] Both SendGrid and SMTP failed", fallbackErr);
+        console.error("[MAILER] Both Mailgun and SMTP failed", fallbackErr);
         throw fallbackErr;
       }
     }
@@ -215,7 +217,7 @@ export type ActivationEmailPayload = {
 
 /**
  * Send the branded activation/verification email using the
- * SendGrid-designed HTML template stored in uploads/mails/templates/.
+ * HTML template stored in uploads/mails/templates/.
  * Replaces '123456' with the real code and the placeholder href with the real link.
  */
 export const sendActivationEmail = async (
@@ -228,7 +230,7 @@ export const sendActivationEmail = async (
     throw new Error(`Activation email template not found at ${ACTIVATION_TEMPLATE_PATH}`);
   }
 
-  // Replace placeholder values injected in the SendGrid template design
+  // Replace placeholder values injected in the template design
   html = html.replace(/123456/g, payload.activationCode);
   html = html.replace(
     /href="https:\/\/www\.google\.com"/g,
@@ -251,9 +253,9 @@ export const safeSendEmail = async (
     await sendEmail(payload);
     return { success: true };
   } catch (err: any) {
-    const body = err?.response?.body;
+    const body = err?.details || err?.response?.body;
     const msg: string = body?.errors?.[0]?.message || err?.message || 'Email send failed';
-    // Common SendGrid quota/auth errors: treat as non-fatal
+    // Common provider quota/auth errors: treat as non-fatal
     if (
       /Maximum credits exceeded/i.test(msg) ||
       /Unauthorized/i.test(msg) ||

@@ -64,10 +64,12 @@ export const ServerSettings = () => {
 
   // Email Keys state
   const [emailSettings, setEmailSettings] = useState({
-    sendgridFrom: '',
-    sendgridApiKey: '',
-    maskedSendgridApiKey: '',
-    hasSendgridApiKey: false,
+    mailgunDomain: '',
+    mailgunFrom: '',
+    mailgunApiKey: '',
+    maskedMailgunApiKey: '',
+    hasMailgunApiKey: false,
+    mailgunRegion: 'us',
     // SMTP
     smtpHost: 'smtpout.secureserver.net',
     smtpPort: 465,
@@ -78,7 +80,7 @@ export const ServerSettings = () => {
     hasSmtpPassword: false,
     maskedSmtpPassword: '',
     // Provider selector
-    emailProvider: 'sendgrid',
+    emailProvider: 'smtp',
   })
   const [emailSaving, setEmailSaving] = useState(false)
   const [emailMessage, setEmailMessage] = useState(null)
@@ -441,10 +443,12 @@ export const ServerSettings = () => {
         if (res.ok && data?.success) {
           const d = data.data
           setEmailSettings({
-            sendgridFrom: d.sendgridFrom || '',
-            sendgridApiKey: '',
-            maskedSendgridApiKey: d.maskedSendgridApiKey || '',
-            hasSendgridApiKey: d.hasSendgridApiKey === true,
+            mailgunDomain: d.mailgunDomain || '',
+            mailgunFrom: d.mailgunFrom || '',
+            mailgunApiKey: '',
+            maskedMailgunApiKey: d.maskedMailgunApiKey || '',
+            hasMailgunApiKey: d.hasMailgunApiKey === true,
+            mailgunRegion: d.mailgunRegion || 'us',
             smtpHost: d.smtpHost || 'smtpout.secureserver.net',
             smtpPort: d.smtpPort || 465,
             smtpSecure: d.smtpSecure !== false,
@@ -453,7 +457,7 @@ export const ServerSettings = () => {
             smtpPassword: '',
             hasSmtpPassword: d.hasSmtpPassword === true,
             maskedSmtpPassword: d.maskedSmtpPassword || '',
-            emailProvider: d.emailProvider || 'sendgrid',
+            emailProvider: d.emailProvider || 'smtp',
           })
         }
       } catch {
@@ -532,8 +536,10 @@ export const ServerSettings = () => {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          sendgridFrom: emailSettings.sendgridFrom,
-          sendgridApiKey: emailSettings.sendgridApiKey,
+          mailgunDomain: emailSettings.mailgunDomain,
+          mailgunFrom: emailSettings.mailgunFrom,
+          mailgunApiKey: emailSettings.mailgunApiKey,
+          mailgunRegion: emailSettings.mailgunRegion,
           smtpHost: emailSettings.smtpHost,
           smtpPort: emailSettings.smtpPort,
           smtpSecure: emailSettings.smtpSecure,
@@ -548,10 +554,12 @@ export const ServerSettings = () => {
       const d = data.data
       setEmailSettings((prev) => ({
         ...prev,
-        sendgridApiKey: '',
-        maskedSendgridApiKey: d.maskedSendgridApiKey || prev.maskedSendgridApiKey,
-        hasSendgridApiKey: d.hasSendgridApiKey === true,
-        sendgridFrom: d.sendgridFrom || prev.sendgridFrom,
+        mailgunApiKey: '',
+        maskedMailgunApiKey: d.maskedMailgunApiKey || prev.maskedMailgunApiKey,
+        hasMailgunApiKey: d.hasMailgunApiKey === true,
+        mailgunDomain: d.mailgunDomain || prev.mailgunDomain,
+        mailgunFrom: d.mailgunFrom || prev.mailgunFrom,
+        mailgunRegion: d.mailgunRegion || prev.mailgunRegion,
         smtpHost: d.smtpHost || prev.smtpHost,
         smtpPort: d.smtpPort || prev.smtpPort,
         smtpSecure: d.smtpSecure !== false,
@@ -974,14 +982,14 @@ export const ServerSettings = () => {
                   <div className="flex gap-3">
                     <button
                       type="button"
-                      onClick={() => handleEmailSettingChange('emailProvider', 'sendgrid')}
+                      onClick={() => handleEmailSettingChange('emailProvider', 'mailgun')}
                       className={`rounded-md border px-4 py-2 text-xs font-medium transition-colors ${
-                        emailSettings.emailProvider === 'sendgrid'
+                        emailSettings.emailProvider === 'mailgun'
                           ? 'border-amber-500 bg-amber-500/20 text-amber-300'
                           : 'border-slate-600 bg-slate-800 text-slate-400 hover:border-slate-500'
                       }`}
                     >
-                      SendGrid
+                      Mailgun
                     </button>
                     <button
                       type="button"
@@ -996,22 +1004,22 @@ export const ServerSettings = () => {
                     </button>
                   </div>
                   <p className="mt-1 text-[11px] text-slate-500">
-                    {emailSettings.emailProvider === 'sendgrid'
-                      ? 'SendGrid is active. SMTP will be used as fallback if SendGrid fails.'
-                      : 'GoDaddy SMTP is active. SendGrid will be used as fallback if SMTP fails.'}
+                    {emailSettings.emailProvider === 'mailgun'
+                      ? 'Mailgun is active. SMTP will be used as fallback if Mailgun fails.'
+                      : 'GoDaddy SMTP is active. Mailgun will be used as fallback if SMTP fails.'}
                   </p>
                 </div>
 
-                {/* SendGrid section */}
+                {/* Mailgun section */}
                 <div className="mb-5">
-                  <p className="mb-2 text-xs font-medium text-slate-400 uppercase tracking-wide">SendGrid</p>
+                  <p className="mb-2 text-xs font-medium text-slate-400 uppercase tracking-wide">Mailgun</p>
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div>
                       <label className="mb-1 block text-xs text-slate-300">From Email</label>
                       <input
                         type="email"
-                        value={emailSettings.sendgridFrom}
-                        onChange={(e) => handleEmailSettingChange('sendgridFrom', e.target.value)}
+                        value={emailSettings.mailgunFrom}
+                        onChange={(e) => handleEmailSettingChange('mailgunFrom', e.target.value)}
                         placeholder="noreply@example.com"
                         className="h-9 w-full rounded-md border border-slate-700 bg-slate-800 px-3 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
                       />
@@ -1020,16 +1028,53 @@ export const ServerSettings = () => {
                       <label className="mb-1 block text-xs text-slate-300">API Key</label>
                       <input
                         type="password"
-                        value={emailSettings.sendgridApiKey}
-                        onChange={(e) => handleEmailSettingChange('sendgridApiKey', e.target.value)}
-                        placeholder={emailSettings.hasSendgridApiKey ? emailSettings.maskedSendgridApiKey || 'Stored — leave blank to keep' : 'SG.xxxxx'}
+                        value={emailSettings.mailgunApiKey}
+                        onChange={(e) => handleEmailSettingChange('mailgunApiKey', e.target.value)}
+                        placeholder={emailSettings.hasMailgunApiKey ? emailSettings.maskedMailgunApiKey || 'Stored — leave blank to keep' : 'key-xxxxx'}
                         className="h-9 w-full rounded-md border border-slate-700 bg-slate-800 px-3 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
                       />
                       <p className="mt-1 text-[11px] text-slate-500">
-                        {emailSettings.hasSendgridApiKey
-                          ? `Stored: ${emailSettings.maskedSendgridApiKey || 'configured'}. Leave blank to keep.`
+                        {emailSettings.hasMailgunApiKey
+                          ? `Stored: ${emailSettings.maskedMailgunApiKey || 'configured'}. Leave blank to keep.`
                           : 'No key stored yet.'}
                       </p>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs text-slate-300">Sending Domain</label>
+                      <input
+                        type="text"
+                        value={emailSettings.mailgunDomain}
+                        onChange={(e) => handleEmailSettingChange('mailgunDomain', e.target.value)}
+                        placeholder="mg.ncapfx.com"
+                        className="h-9 w-full rounded-md border border-slate-700 bg-slate-800 px-3 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs text-slate-300">Region</label>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleEmailSettingChange('mailgunRegion', 'us')}
+                          className={`h-9 flex-1 rounded-md border text-xs font-medium transition-colors ${
+                            emailSettings.mailgunRegion === 'us'
+                              ? 'border-amber-500 bg-amber-500/20 text-amber-300'
+                              : 'border-slate-600 bg-slate-800 text-slate-400 hover:border-slate-500'
+                          }`}
+                        >
+                          US
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleEmailSettingChange('mailgunRegion', 'eu')}
+                          className={`h-9 flex-1 rounded-md border text-xs font-medium transition-colors ${
+                            emailSettings.mailgunRegion === 'eu'
+                              ? 'border-amber-500 bg-amber-500/20 text-amber-300'
+                              : 'border-slate-600 bg-slate-800 text-slate-400 hover:border-slate-500'
+                          }`}
+                        >
+                          EU
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>

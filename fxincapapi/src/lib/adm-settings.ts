@@ -2,7 +2,7 @@ import { query } from "./database.js";
 
 /**
  * Generic key-value store backed by the `adm_settings` PostgreSQL table.
- * Used for storing integration credentials (SendGrid, Firebase, etc.)
+ * Used for storing integration credentials (Mailgun, Firebase, etc.)
  * that admins can update at runtime without restarting the API.
  */
 

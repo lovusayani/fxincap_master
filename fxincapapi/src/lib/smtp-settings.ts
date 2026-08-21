@@ -9,7 +9,7 @@ export type SmtpSettings = {
   smtpFrom: string;
 };
 
-export type EmailProvider = "sendgrid" | "smtp";
+export type EmailProvider = "mailgun" | "smtp";
 
 const DB_KEY_PROVIDER  = "email_provider";
 const DB_KEY_HOST      = "smtp_host";
@@ -75,8 +75,8 @@ export const saveStoredSmtpSettings = async (
 
 export const getEmailProvider = async (): Promise<EmailProvider> => {
   const db = await getAdmSettings([DB_KEY_PROVIDER]);
-  const val = String(db[DB_KEY_PROVIDER] ?? "sendgrid").trim().toLowerCase();
-  return val === "smtp" ? "smtp" : "sendgrid";
+  const val = String(db[DB_KEY_PROVIDER] ?? "smtp").trim().toLowerCase();
+  return val === "mailgun" ? "mailgun" : "smtp";
 };
 
 export const setEmailProvider = async (provider: EmailProvider): Promise<void> => {
