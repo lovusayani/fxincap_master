@@ -205,7 +205,7 @@ export const sendEmail = async (payload: GenericEmailPayload) => {
 
 const ACTIVATION_TEMPLATE_PATH = path.resolve(
   process.cwd(),
-  "uploads/mails/templates/activation/24032026.html"
+  "src/emailTemplates/activation.html"
 );
 
 export type ActivationEmailPayload = {
