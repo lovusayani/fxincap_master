@@ -90,8 +90,7 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
     const [positions, setPositions] = useState<Position[]>([]);
     const [orders, setOrders] = useState<Order[]>([]);
     const [history, setHistory] = useState<HistoryRow[]>([]);
-    /** Full closed-trade count. `history` is truncated to 10 rows for display,
-     *  so its length would under-report the badge once there are more. */
+    /** Full closed-trade count, capped at the 500-row API limit below. */
     const [historyTotal, setHistoryTotal] = useState(0);
     const [loading, setLoading] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -121,7 +120,7 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
             const [posRes, ordRes, histRes] = await Promise.all([
                 fetch(apiUrl("/api/trades/open"), { headers: authHeaders() }),
                 fetch(apiUrl("/api/orders"), { headers: authHeaders() }),
-                fetch(apiUrl("/api/history?limit=10"), { headers: authHeaders() }),
+                fetch(apiUrl("/api/history?limit=500"), { headers: authHeaders() }),
             ]);
             const requestErrors: string[] = [];
             if (posRes.ok) {
@@ -167,7 +166,7 @@ export default function BottomTabs({ prices = {}, refreshKey = 0, onTradeClosed 
                 const d = await histRes.json();
                 const raw: any[] = Array.isArray(d) ? d : (d.history ?? d ?? []);
                 setHistoryTotal(raw.length);
-                setHistory(raw.slice(0, 10).map((t: any) => ({
+                setHistory(raw.slice(0, 500).map((t: any) => ({
                     id: String(t.id),
                     symbol: t.symbol,
                     side: (t.side ?? "").toUpperCase(),

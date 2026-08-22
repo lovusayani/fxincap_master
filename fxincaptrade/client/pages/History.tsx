@@ -12,6 +12,15 @@ interface TradeRecord {
   closePrice: number;
   pnl: number;
   closedAt: string;
+  accountId?: string | null;
+  accountNumber?: string | null;
+  accountMode?: string | null;
+}
+
+interface AccountOption {
+  id: string;
+  accountNumber: string;
+  tradingMode: string;
 }
 
 export default function HistoryPage() {
@@ -23,10 +32,33 @@ export default function HistoryPage() {
   const [sideFilter, setSideFilter] = useState<"ALL" | "BUY" | "SELL">("ALL");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [accounts, setAccounts] = useState<AccountOption[]>([]);
+  const [accountFilter, setAccountFilter] = useState<string>("ALL");
 
   useEffect(() => {
     const token = localStorage.getItem("auth_token");
-    fetch(apiUrl("/api/history"), {
+    fetch(apiUrl("/api/user/accounts"), {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        const rows = Array.isArray(data?.data) ? data.data : [];
+        setAccounts(
+          rows.map((row: any) => ({
+            id: String(row?.id ?? ""),
+            accountNumber: row?.accountNumber || row?.account_number || "",
+            tradingMode: row?.tradingMode || row?.trading_mode || "demo",
+          }))
+        );
+      })
+      .catch(() => { });
+  }, []);
+
+  useEffect(() => {
+    const token = localStorage.getItem("auth_token");
+    setLoading(true);
+    const query = accountFilter !== "ALL" ? `?accountId=${encodeURIComponent(accountFilter)}` : "";
+    fetch(apiUrl(`/api/history${query}`), {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((r) => r.json())
@@ -36,7 +68,7 @@ export default function HistoryPage() {
       })
       .catch(() => { })
       .finally(() => setLoading(false));
-  }, []);
+  }, [accountFilter]);
 
   const handleSort = (field: keyof TradeRecord) => {
     if (sortField === field) {
@@ -139,7 +171,7 @@ export default function HistoryPage() {
 
         {/* Filters Section */}
         <div className="mb-6 bg-white/5 border border-white/10 rounded-lg p-4 backdrop-blur-sm">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3">
             {/* Search */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -151,6 +183,20 @@ export default function HistoryPage() {
                 className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-white/30 transition"
               />
             </div>
+
+            {/* Account Filter */}
+            <select
+              value={accountFilter}
+              onChange={(e) => setAccountFilter(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-white/30 transition cursor-pointer"
+            >
+              <option value="ALL" className="bg-gray-900">All Accounts</option>
+              {accounts.map((acct) => (
+                <option key={acct.id} value={acct.id} className="bg-gray-900">
+                  {acct.accountNumber} ({acct.tradingMode.toUpperCase()})
+                </option>
+              ))}
+            </select>
 
             {/* Side Filter */}
             <select
@@ -190,7 +236,7 @@ export default function HistoryPage() {
           </div>
 
           {/* Clear Filters */}
-          {(searchTerm || sideFilter !== "ALL" || startDate || endDate) && (
+          {(searchTerm || sideFilter !== "ALL" || startDate || endDate || accountFilter !== "ALL") && (
             <div className="mt-3 flex justify-end">
               <button
                 onClick={() => {
@@ -198,6 +244,7 @@ export default function HistoryPage() {
                   setSideFilter("ALL");
                   setStartDate("");
                   setEndDate("");
+                  setAccountFilter("ALL");
                 }}
                 className="text-xs text-gray-400 hover:text-white transition"
               >
@@ -227,6 +274,9 @@ export default function HistoryPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-white/10 bg-white/5">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-300">
+                    Account
+                  </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-300 cursor-pointer hover:text-white hover:bg-white/10 transition" onClick={() => handleSort("symbol")}>
                     <div className="flex items-center gap-2">
                       Symbol
@@ -277,8 +327,22 @@ export default function HistoryPage() {
                   const entryPrice = trade.entryPrice ?? 0;
                   const closePrice = trade.closePrice ?? 0;
                   const pnl = trade.pnl ?? 0;
+                  const closedDate = trade.closedAt ? new Date(trade.closedAt) : null;
+                  const hasValidDate = closedDate !== null && !Number.isNaN(closedDate.getTime());
                   return (
                     <tr key={trade.id} className="border-b border-white/5 hover:bg-white/10 transition">
+                      <td className="px-4 py-3 text-gray-300">
+                        {trade.accountNumber ? (
+                          <>
+                            <div className="font-mono text-xs text-white">{trade.accountNumber}</div>
+                            {trade.accountMode && (
+                              <div className="text-[10px] uppercase text-gray-500">{trade.accountMode}</div>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-gray-500">—</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-white font-semibold">{trade.symbol}</td>
                       <td className="px-4 py-3">
                         <span className={`px-3 py-1 rounded-full text-xs font-bold ${
@@ -294,10 +358,16 @@ export default function HistoryPage() {
                         {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
                       </td>
                       <td className="px-4 py-3 text-right text-gray-400 text-xs">
-                        <div>{new Date(trade.closedAt).toLocaleDateString()}</div>
-                        <div className="text-[10px] text-gray-500">
-                          {new Date(trade.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        </div>
+                        {hasValidDate ? (
+                          <>
+                            <div>{closedDate.toLocaleDateString()}</div>
+                            <div className="text-[10px] text-gray-500">
+                              {closedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                            </div>
+                          </>
+                        ) : (
+                          <span className="text-gray-500">—</span>
+                        )}
                       </td>
                     </tr>
                   );

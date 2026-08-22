@@ -33,6 +33,14 @@ type DepositRow = {
   method?: string | null;
   paymentChain?: string | null;
   createdAt: string;
+  accountNumber?: string | null;
+  accountMode?: string | null;
+};
+
+type AccountOption = {
+  id: string;
+  accountNumber: string;
+  tradingMode: string;
 };
 
 type RealBalanceSummary = {
@@ -126,6 +134,8 @@ export default function WalletPage() {
   });
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
+  const [accounts, setAccounts] = useState<AccountOption[]>([]);
+  const [accountFilter, setAccountFilter] = useState<string>("ALL");
 
   const token = localStorage.getItem("auth_token");
   const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
@@ -136,10 +146,11 @@ export default function WalletPage() {
     const loadWalletData = async () => {
       setLoading(true);
       try {
-        const [balanceResponse, offersResponse, requestsResponse] = await Promise.all([
+        const [balanceResponse, offersResponse, requestsResponse, accountsResponse] = await Promise.all([
           fetch(apiUrl("/api/user/balance?mode=real"), { headers: authHeaders }),
           fetch(apiUrl("/api/user/deposit-offers"), { headers: authHeaders }),
           fetch(apiUrl("/api/user/fund-requests"), { headers: authHeaders }),
+          fetch(apiUrl("/api/user/accounts"), { headers: authHeaders }),
         ]);
 
         const nextBalance: RealBalanceSummary = {
@@ -162,8 +173,16 @@ export default function WalletPage() {
 
         const offersPayload = offersResponse.ok ? await offersResponse.json() : null;
         const requestsPayload = requestsResponse.ok ? await requestsResponse.json() : null;
+        const accountsPayload = accountsResponse.ok ? await accountsResponse.json() : null;
         const nextRows = Array.isArray(requestsPayload?.requests)
           ? requestsPayload.requests.filter((item: DepositRow & { type?: string }) => String(item?.type || "").toLowerCase() === "deposit")
+          : [];
+        const nextAccounts = Array.isArray(accountsPayload?.data)
+          ? accountsPayload.data.map((row: any) => ({
+              id: String(row?.id ?? ""),
+              accountNumber: row?.accountNumber || row?.account_number || "",
+              tradingMode: row?.tradingMode || row?.trading_mode || "demo",
+            }))
           : [];
 
         if (!active) {
@@ -173,6 +192,7 @@ export default function WalletPage() {
         setRealBalance(nextBalance);
         setOffers(Array.isArray(offersPayload?.data) ? offersPayload.data : []);
         setDepositRows(nextRows);
+        setAccounts(nextAccounts);
       } catch {
         if (!active) {
           return;
@@ -201,23 +221,34 @@ export default function WalletPage() {
     };
   }, []);
 
+  const filteredDepositRows = useMemo(() => {
+    if (accountFilter === "ALL") {
+      return depositRows;
+    }
+    return depositRows.filter((row) => row.accountNumber === accountFilter);
+  }, [depositRows, accountFilter]);
+
   useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(depositRows.length / ROWS_PER_PAGE));
+    setPage(1);
+  }, [accountFilter]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(filteredDepositRows.length / ROWS_PER_PAGE));
     if (page > totalPages) {
       setPage(totalPages);
     }
-  }, [depositRows.length, page]);
+  }, [filteredDepositRows.length, page]);
 
-  const weeklyDepositData = useMemo(() => getMonthWeekBuckets(depositRows), [depositRows]);
+  const weeklyDepositData = useMemo(() => getMonthWeekBuckets(filteredDepositRows), [filteredDepositRows]);
   const totalDepositAmount = useMemo(
-    () => depositRows.reduce((sum, row) => sum + Number(row.amount || 0), 0),
-    [depositRows]
+    () => filteredDepositRows.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+    [filteredDepositRows]
   );
-  const totalPages = Math.max(1, Math.ceil(depositRows.length / ROWS_PER_PAGE));
+  const totalPages = Math.max(1, Math.ceil(filteredDepositRows.length / ROWS_PER_PAGE));
   const paginatedRows = useMemo(() => {
     const startIndex = (page - 1) * ROWS_PER_PAGE;
-    return depositRows.slice(startIndex, startIndex + ROWS_PER_PAGE);
-  }, [depositRows, page]);
+    return filteredDepositRows.slice(startIndex, startIndex + ROWS_PER_PAGE);
+  }, [filteredDepositRows, page]);
   const paginationItems = buildPaginationItems(page, totalPages);
 
   return (
@@ -348,25 +379,40 @@ export default function WalletPage() {
               <CardTitle>Deposit Report</CardTitle>
               <p className="mt-1 text-sm text-gray-400">All deposit requests for this user with current approval status.</p>
             </div>
-            <Button type="button" variant="outline" className="h-10 rounded-xl border-white/15 text-gray-200 hover:bg-white/10" onClick={() => window.location.reload()}>
-              <RefreshCw className="mr-2 h-4 w-4" />
-              Refresh
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={accountFilter}
+                onChange={(e) => setAccountFilter(e.target.value)}
+                className="h-10 rounded-xl border border-white/15 bg-black/30 px-3 text-sm text-gray-200 focus:outline-none focus:border-white/30 transition cursor-pointer"
+              >
+                <option value="ALL" className="bg-gray-900">All Accounts</option>
+                {accounts.map((acct) => (
+                  <option key={acct.id} value={acct.accountNumber} className="bg-gray-900">
+                    {acct.accountNumber} ({acct.tradingMode.toUpperCase()})
+                  </option>
+                ))}
+              </select>
+              <Button type="button" variant="outline" className="h-10 rounded-xl border-white/15 text-gray-200 hover:bg-white/10" onClick={() => window.location.reload()}>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Refresh
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {loading ? (
               <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-10 text-center text-sm text-gray-400">
                 Loading wallet report...
               </div>
-            ) : depositRows.length === 0 ? (
+            ) : filteredDepositRows.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-10 text-center text-sm text-gray-400">
-                No deposit requests found for this user yet.
+                {accountFilter === "ALL" ? "No deposit requests found for this user yet." : "No deposits found for this account."}
               </div>
             ) : (
               <>
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead>Account</TableHead>
                       <TableHead>Reference</TableHead>
                       <TableHead>Date</TableHead>
                       <TableHead>Method</TableHead>
@@ -378,6 +424,18 @@ export default function WalletPage() {
                   <TableBody>
                     {paginatedRows.map((row) => (
                       <TableRow key={row.id}>
+                        <TableCell>
+                          {row.accountNumber ? (
+                            <>
+                              <div className="font-mono text-xs text-white">{row.accountNumber}</div>
+                              {row.accountMode && (
+                                <div className="text-[10px] uppercase text-gray-500">{row.accountMode}</div>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-gray-500">—</span>
+                          )}
+                        </TableCell>
                         <TableCell className="font-medium text-white">{row.reference || row.id}</TableCell>
                         <TableCell>{new Date(row.createdAt).toLocaleDateString()}</TableCell>
                         <TableCell>{row.paymentMethod || row.method || "Manual"}</TableCell>
@@ -395,7 +453,7 @@ export default function WalletPage() {
 
                 <div className="flex flex-col gap-3 border-t border-white/10 pt-4 text-sm text-gray-400 sm:flex-row sm:items-center sm:justify-between">
                   <p>
-                    Showing {(page - 1) * ROWS_PER_PAGE + 1} to {Math.min(page * ROWS_PER_PAGE, depositRows.length)} of {depositRows.length} deposits
+                    Showing {(page - 1) * ROWS_PER_PAGE + 1} to {Math.min(page * ROWS_PER_PAGE, filteredDepositRows.length)} of {filteredDepositRows.length} deposits
                   </p>
                   <Pagination className="mx-0 w-auto justify-end">
                     <PaginationContent>

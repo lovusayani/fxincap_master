@@ -1,5 +1,18 @@
 import { query } from "../lib/database.js";
 import { v4 as uuidv4 } from "uuid";
+import { notifyDepositApproved, notifyWithdrawalProcessed } from "../lib/tradeNotifications.js";
+
+async function fetchUserContact(userId: string): Promise<{ email: string | null; firstName: string | null }> {
+  const rows = (await query("SELECT email, first_name FROM users WHERE id = ? LIMIT 1", [userId])) as any[];
+  const user = Array.isArray(rows) ? rows[0] : null;
+  return { email: user?.email || null, firstName: user?.first_name || null };
+}
+
+async function fetchAccountNumber(accountId: string | null | undefined): Promise<string | null> {
+  if (!accountId) return null;
+  const rows = (await query("SELECT account_number FROM user_accounts WHERE id = ? LIMIT 1", [accountId])) as any[];
+  return Array.isArray(rows) && rows[0] ? rows[0].account_number || null : null;
+}
 
 export interface FundListOptions {
   status?: string;
@@ -294,6 +307,16 @@ export async function completeDepositAndCredit(id: string) {
     [uuidv4(), userId, accountId, amount, balanceBefore, balanceAfter, "Deposit approved by admin", req.reference_number || id]
   );
 
+  // 5) Notify the trader by email (rate-limited/category-gated by admin settings)
+  const [contact, accountNumber] = await Promise.all([fetchUserContact(userId), fetchAccountNumber(accountId)]);
+  await notifyDepositApproved({
+    userId,
+    to: contact.email,
+    firstName: contact.firstName || undefined,
+    amount,
+    accountNumber,
+  });
+
   return { success: true, accountId, balanceBefore, balanceAfter };
 }
 
@@ -354,6 +377,17 @@ export async function rejectWithdrawalAndCredit(id: string) {
     [uuidv4(), userId, acc.id, amount, balanceBefore, balanceAfter, "Withdrawal rejected by admin - balance credited", req.reference_number || id]
   );
 
+  // Notify the trader by email (rate-limited/category-gated by admin settings)
+  const [contact, accountNumber] = await Promise.all([fetchUserContact(userId), fetchAccountNumber(acc.id)]);
+  await notifyWithdrawalProcessed({
+    userId,
+    to: contact.email,
+    firstName: contact.firstName || undefined,
+    amount,
+    status: "rejected",
+    accountNumber,
+  });
+
   return { success: true, accountId: acc.id, balanceBefore, balanceAfter };
 }
 
@@ -397,6 +431,17 @@ export async function completeWithdrawalAndDebit(id: string) {
     "INSERT INTO transactions (id, user_id, account_id, type, amount, balance_before, balance_after, description, reference_id) VALUES (?, ?, ?, 'withdrawal', ?, ?, ?, ?, ?)",
     [uuidv4(), userId, accountId || userId, amount, 0, 0, "Withdrawal approved by admin", req.reference_number || id]
   );
+
+  // Notify the trader by email (rate-limited/category-gated by admin settings)
+  const [contact, accountNumber] = await Promise.all([fetchUserContact(userId), fetchAccountNumber(accountId)]);
+  await notifyWithdrawalProcessed({
+    userId,
+    to: contact.email,
+    firstName: contact.firstName || undefined,
+    amount,
+    status: "approved",
+    accountNumber,
+  });
 
   return { success: true, accountId, balanceBefore: 0, balanceAfter: 0 };
 }

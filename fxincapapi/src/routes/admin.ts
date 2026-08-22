@@ -39,6 +39,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { imageSizeFromFile } from "image-size/fromFile";
 import { getStoredEmailSettings, maskEmailApiKey, saveStoredEmailSettings } from "../lib/email-settings.js";
+import { getNotificationSettings, saveNotificationSettings } from "../lib/notificationSettings.js";
 import {
   getEmailProvider,
   getStoredSmtpSettings,
@@ -886,6 +887,32 @@ router.post("/email-settings/test", verifyToken, async (req: AuthRequest, res: R
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message || "Failed to send test email" });
+  }
+});
+
+router.get("/notification-settings", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const settings = await getNotificationSettings();
+    res.json({ success: true, data: settings });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load notification settings" });
+  }
+});
+
+router.post("/notification-settings", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const body = req.body ?? {};
+    const dailyCap = body.dailyCap !== undefined ? parseInt(String(body.dailyCap), 10) : undefined;
+    const typesEnabled = body.typesEnabled && typeof body.typesEnabled === "object" ? {
+      deposit: typeof body.typesEnabled.deposit === "boolean" ? body.typesEnabled.deposit : undefined,
+      withdrawal: typeof body.typesEnabled.withdrawal === "boolean" ? body.typesEnabled.withdrawal : undefined,
+      trade: typeof body.typesEnabled.trade === "boolean" ? body.typesEnabled.trade : undefined,
+    } : undefined;
+
+    const settings = await saveNotificationSettings({ dailyCap, typesEnabled });
+    res.json({ success: true, data: settings, message: "Notification settings saved successfully" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to save notification settings" });
   }
 });
 

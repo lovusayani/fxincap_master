@@ -1,6 +1,42 @@
 import { query } from "./database.js";
 import { WS_QUOTE_BASE_URL } from "./env.js";
 import { getServerQuote, isFresh, executablePrice } from "./market-price.js";
+import { notifyTradeExecuted } from "./tradeNotifications.js";
+
+/** Fire-and-forget: trade execution emails must never add latency to opening a trade. */
+async function notifyTradeExecutedInBackground(input: {
+  userId: string;
+  accountId: string;
+  symbol: string;
+  side: string;
+  volume: number;
+  entryPrice: number;
+}): Promise<void> {
+  try {
+    const rows = (await query(
+      `SELECT u.email, u.first_name, ua.account_number
+         FROM users u
+         LEFT JOIN user_accounts ua ON ua.id = ?
+        WHERE u.id = ?
+        LIMIT 1`,
+      [input.accountId, input.userId]
+    )) as any[];
+    const row = Array.isArray(rows) ? rows[0] : null;
+    if (!row?.email) return;
+    await notifyTradeExecuted({
+      userId: input.userId,
+      to: row.email,
+      firstName: row.first_name || undefined,
+      symbol: input.symbol,
+      side: input.side,
+      volume: input.volume,
+      entryPrice: input.entryPrice,
+      accountNumber: row.account_number || null,
+    });
+  } catch (err: any) {
+    console.warn("[TRADE NOTIFY] Failed to send trade executed email:", err?.message || err);
+  }
+}
 
 export interface Trade {
   id: number;
@@ -229,6 +265,7 @@ export async function createTrade(
 
     await conn.query("COMMIT");
     await logTradeAction(tradeId, userId, "TRADE_OPENED", null, { volume, entryPrice, leverage });
+    void notifyTradeExecutedInBackground({ userId, accountId, symbol, side, volume, entryPrice });
     return { success: true, tradeId };
   } catch (error) {
     await conn.query("ROLLBACK").catch(() => {});
@@ -364,17 +401,28 @@ export async function closeTrade(
     const notional = getTradeNotional(trade.symbol, volume, entryPrice);
     const profitPct = notional > 0 ? (finalPnL / notional) * 100 : 0;
 
+    // Legacy trades opened before account tagging existed have no account_id;
+    // fall back to the user's current active account rather than no-op.
+    const settlementAccountId: string | null =
+      trade.account_id || (await resolveActiveAccountId(trade.user_id, conn));
+
+    if (!settlementAccountId) {
+      await conn.query("ROLLBACK");
+      return { success: false, error: "No active trading account found to settle this trade against" };
+    }
+
     await conn.query(
       `INSERT INTO trade_history (
-         user_id, symbol, side, volume, open_price, close_price, profit,
+         user_id, account_id, symbol, side, volume, open_price, close_price, profit,
          profit_percentage, leverage, open_time, close_time, duration_seconds, closed_reason
        )
        VALUES (
-         $1, $2, $3, $4, $5, $6, $7,
-         $8, $9, $10, NOW(), EXTRACT(EPOCH FROM (NOW() - $10::timestamp))::int, $11
+         $1, $2, $3, $4, $5, $6, $7, $8,
+         $9, $10, $11, NOW(), EXTRACT(EPOCH FROM (NOW() - $11::timestamp))::int, $12
        )`,
       [
         trade.user_id,
+        settlementAccountId,
         trade.symbol,
         trade.side,
         trade.volume,
@@ -387,16 +435,6 @@ export async function closeTrade(
         reason,
       ]
     );
-
-    // Legacy trades opened before account tagging existed have no account_id;
-    // fall back to the user's current active account rather than no-op.
-    const settlementAccountId: string | null =
-      trade.account_id || (await resolveActiveAccountId(trade.user_id, conn));
-
-    if (!settlementAccountId) {
-      await conn.query("ROLLBACK");
-      return { success: false, error: "No active trading account found to settle this trade against" };
-    }
 
     const unlockResult = await unlockBalance(settlementAccountId, trade.locked_balance, conn);
     if (!unlockResult.success) {

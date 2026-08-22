@@ -38,13 +38,24 @@ router.get("/", verifyToken, async (req: AuthRequest, res: Response) => {
     const userId = req.user?.id;
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
     const offset = req.query.offset ? parseInt(req.query.offset as string) : 0;
+    const accountId = typeof req.query.accountId === "string" ? req.query.accountId.trim() : "";
+
+    const params: any[] = [userId];
+    let accountFilter = "";
+    if (accountId) {
+      params.push(accountId);
+      accountFilter = ` AND th.account_id = $${params.length}`;
+    }
+    params.push(limit, offset);
 
     const results = await query(
-      `SELECT * FROM trade_history 
-       WHERE user_id = $1 
-       ORDER BY close_time DESC NULLS LAST 
-       LIMIT $2 OFFSET $3`,
-      [userId, limit, offset]
+      `SELECT th.*, ua.account_number, ua.trading_mode AS account_mode
+         FROM trade_history th
+         LEFT JOIN user_accounts ua ON ua.id = th.account_id
+        WHERE th.user_id = $1${accountFilter}
+        ORDER BY th.close_time DESC NULLS LAST
+        LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
     );
 
     const history = Array.isArray(results)
@@ -54,14 +65,20 @@ router.get("/", verifyToken, async (req: AuthRequest, res: Response) => {
           side: trade.side,
           volume: parseFloat(trade.volume),
           entryPrice: parseFloat(trade.open_price),
+          closePrice: parseFloat(trade.close_price),
           exitPrice: parseFloat(trade.close_price),
+          pnl: parseFloat(trade.profit ?? 0),
           profitLoss: parseFloat(trade.profit ?? 0),
           profitLossPercent: parseFloat(trade.profit_percentage ?? 0),
           commission: parseFloat(trade.commission ?? 0),
           leverage: trade.leverage,
           entryTime: trade.open_time,
+          closedAt: trade.close_time,
           exitTime: trade.close_time,
           closingReason: trade.closed_reason,
+          accountId: trade.account_id,
+          accountNumber: trade.account_number || null,
+          accountMode: trade.account_mode || null,
         }))
       : [];
 

@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTradingStore } from "@/state/trading-store";
 import {
@@ -29,6 +30,10 @@ export default function Header() {
     const [showMenu, setShowMenu] = useState(false);
     const [showMore, setShowMore] = useState(false);
     const [showProfile, setShowProfile] = useState(false);
+    const [openTopDropdown, setOpenTopDropdown] = useState<string | null>(null);
+    const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+    const topNavRef = useRef<HTMLElement | null>(null);
+    const dropdownTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
     const [theme, setTheme] = useState<UiTheme>(() => {
         const saved = localStorage.getItem("ui_theme");
         if (saved === "dark" || saved === "light") return saved;
@@ -55,6 +60,36 @@ export default function Header() {
         localStorage.setItem("ui_theme", theme);
     }, [theme]);
 
+    const dropdownPanelRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            const target = event.target as Node;
+            const insideNav = topNavRef.current?.contains(target);
+            const insideDropdown = dropdownPanelRef.current?.contains(target);
+            if (!insideNav && !insideDropdown) {
+                setOpenTopDropdown(null);
+                setDropdownPosition(null);
+            }
+        };
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, []);
+
+    const handleTopDropdownToggle = (label: string) => {
+        if (openTopDropdown === label) {
+            setOpenTopDropdown(null);
+            setDropdownPosition(null);
+            return;
+        }
+        const trigger = dropdownTriggerRefs.current[label];
+        if (trigger) {
+            const rect = trigger.getBoundingClientRect();
+            setDropdownPosition({ top: rect.bottom + 4, left: rect.left });
+        }
+        setOpenTopDropdown(label);
+    };
+
     const toggleTheme = () => {
         const mode = getComputedStyle(document.documentElement).getPropertyValue("--platform-theme-mode").trim();
         if (mode && mode !== "default") return;
@@ -78,13 +113,27 @@ export default function Header() {
         { label: "Settings", path: "/settings", icon: Settings },
     ];
 
-    const desktopTopLinks = [
+    type TopNavItem = { label: string; path: string };
+    type TopNavLink = TopNavItem | { label: string; items: TopNavItem[] };
+
+    const desktopTopLinks: TopNavLink[] = [
         { label: "Portfolio", path: "/portfolio" },
-        { label: "My Accounts", path: "/accounts" },
-        { label: "Markets", path: "/markets" },
-        { label: "MT5", path: "/mt5" },
-        { label: "Copy Trade", path: "/mampamm" },
-        { label: "Wallet", path: "/wallet" },
+        {
+            label: "Markets",
+            items: [
+                { label: "Trade/Exchange", path: "/markets" },
+                { label: "Trade History", path: "/history" },
+                { label: "MT5", path: "/mt5" },
+                { label: "Copy Trade", path: "/mampamm" },
+            ],
+        },
+        {
+            label: "Accounts",
+            items: [
+                { label: "Wallet", path: "/wallet" },
+                { label: "My Accounts", path: "/accounts" },
+            ],
+        },
         { label: "IB", path: "/ib" },
     ];
 
@@ -97,7 +146,6 @@ export default function Header() {
     const profileMenuItems = [
         { label: "Me", path: "/profile" },
         { label: "History", path: "/history" },
-        { label: "Positions", path: "/positions" },
     ];
 
     const rootTheme = (typeof document !== "undefined" ? document.documentElement.getAttribute("data-theme") : null) || theme;
@@ -126,8 +174,73 @@ export default function Header() {
                     </button>
                 </div>
 
-                <nav className="hidden lg:flex items-center justify-start gap-1 ml-2 flex-1 overflow-x-auto">
+                <nav ref={topNavRef} className="hidden lg:flex items-center justify-start gap-1 ml-2 flex-1 overflow-x-auto">
                     {desktopTopLinks.map((link) => {
+                        if ("items" in link) {
+                            const isActive = link.items.some(
+                                (item) => location.pathname === item.path || location.pathname.startsWith(item.path)
+                            );
+                            const isOpen = openTopDropdown === link.label;
+
+                            return (
+                                <div key={link.label} className="relative">
+                                    <button
+                                        type="button"
+                                        ref={(el) => {
+                                            dropdownTriggerRefs.current[link.label] = el;
+                                        }}
+                                        onClick={() => handleTopDropdownToggle(link.label)}
+                                        className={`flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm font-medium transition whitespace-nowrap ${isActive
+                                            ? isDark
+                                                ? "bg-white/15 text-white"
+                                                : "bg-gray-200 text-gray-900"
+                                            : isDark
+                                                ? "text-gray-200 hover:bg-white/10 hover:text-white"
+                                                : "text-gray-700 hover:bg-gray-100 hover:text-gray-900"
+                                            }`}
+                                    >
+                                        {link.label}
+                                        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                                    </button>
+                                    {isOpen && dropdownPosition && createPortal(
+                                        <div
+                                            ref={dropdownPanelRef}
+                                            style={{ position: "fixed", top: dropdownPosition.top, left: dropdownPosition.left }}
+                                            className={`z-[100] min-w-[190px] rounded-lg border py-1 shadow-xl ${isDark ? "border-white/10 bg-gray-900" : "border-gray-200 bg-white"
+                                                }`}
+                                        >
+                                            {link.items.map((item) => {
+                                                const itemActive =
+                                                    location.pathname === item.path || location.pathname.startsWith(item.path);
+                                                return (
+                                                    <button
+                                                        key={item.path}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            navigate(item.path);
+                                                            setOpenTopDropdown(null);
+                                                            setDropdownPosition(null);
+                                                        }}
+                                                        className={`flex w-full items-center px-3 py-2 text-left text-sm transition whitespace-nowrap ${itemActive
+                                                            ? isDark
+                                                                ? "bg-white/10 text-white"
+                                                                : "bg-gray-100 text-gray-900"
+                                                            : isDark
+                                                                ? "text-gray-200 hover:bg-white/10 hover:text-white"
+                                                                : "text-gray-700 hover:bg-gray-100 hover:text-gray-900"
+                                                            }`}
+                                                    >
+                                                        {item.label}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>,
+                                        document.body
+                                    )}
+                                </div>
+                            );
+                        }
+
                         const isActive =
                             location.pathname === link.path ||
                             (link.path !== "/" && location.pathname.startsWith(link.path));

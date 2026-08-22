@@ -33,7 +33,7 @@ export const ServerSettings = () => {
       // therefore never do better than report that 401, so skip the socket
       // entirely and report configuration state instead — use the Quote Test or
       // Internal Stream Test below to exercise the real credential.
-      { key: 'infoway', name: 'Infoway', url: 'wss://data.infoway.io/ws?business=common', enabled: provMap.infoway?.enabled, serverSideKey: true },
+      { key: 'infoway', name: 'SPAPI', url: 'wss://data.infoway.io/ws?business=common', enabled: provMap.infoway?.enabled, serverSideKey: true },
     ]
   }, [providers])
 
@@ -84,9 +84,18 @@ export const ServerSettings = () => {
   })
   const [emailSaving, setEmailSaving] = useState(false)
   const [emailMessage, setEmailMessage] = useState(null)
+  const [emailDetailsOpen, setEmailDetailsOpen] = useState(false)
   const [testEmailTo, setTestEmailTo] = useState('')
   const [testEmailSending, setTestEmailSending] = useState(false)
   const [testEmailResult, setTestEmailResult] = useState(null)
+
+  // Notification settings state
+  const [notifSettings, setNotifSettings] = useState({
+    dailyCap: 20,
+    typesEnabled: { deposit: true, withdrawal: true, trade: true },
+  })
+  const [notifSaving, setNotifSaving] = useState(false)
+  const [notifMessage, setNotifMessage] = useState(null)
 
   const internalStreamUrl = useMemo(() => {
     if (typeof window === 'undefined') return ''
@@ -466,6 +475,72 @@ export const ServerSettings = () => {
     }
     fetchEmailSettings()
   }, [token])
+
+  useEffect(() => {
+    if (!token) return
+    const fetchNotifSettings = async () => {
+      try {
+        const res = await fetch('/api/admin/notification-settings', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const data = await res.json().catch(() => null)
+        if (res.ok && data?.success && data.data) {
+          setNotifSettings({
+            dailyCap: data.data.dailyCap ?? 20,
+            typesEnabled: {
+              deposit: data.data.typesEnabled?.deposit !== false,
+              withdrawal: data.data.typesEnabled?.withdrawal !== false,
+              trade: data.data.typesEnabled?.trade !== false,
+            },
+          })
+        }
+      } catch {
+        // API unreachable
+      }
+    }
+    fetchNotifSettings()
+  }, [token])
+
+  const handleNotifTypeToggle = (key) => {
+    setNotifSettings((prev) => ({
+      ...prev,
+      typesEnabled: { ...prev.typesEnabled, [key]: !prev.typesEnabled[key] },
+    }))
+    setNotifMessage(null)
+  }
+
+  const handleNotifCapChange = (value) => {
+    setNotifSettings((prev) => ({ ...prev, dailyCap: value }))
+    setNotifMessage(null)
+  }
+
+  const handleNotifSave = async () => {
+    try {
+      setNotifSaving(true)
+      const response = await fetch('/api/admin/notification-settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          dailyCap: Number(notifSettings.dailyCap) || 20,
+          typesEnabled: notifSettings.typesEnabled,
+        }),
+      })
+      const data = await response.json().catch(() => null)
+      if (!response.ok || !data?.success) throw new Error(data?.error || 'Failed to save notification settings')
+      setNotifSettings({
+        dailyCap: data.data.dailyCap,
+        typesEnabled: data.data.typesEnabled,
+      })
+      setNotifMessage({ type: 'success', text: 'Notification settings saved successfully' })
+    } catch (error) {
+      setNotifMessage({ type: 'error', text: error?.message || 'Failed to save notification settings' })
+    } finally {
+      setNotifSaving(false)
+    }
+  }
 
   useEffect(() => {
     runSocketMonitor()
@@ -1010,6 +1085,17 @@ export const ServerSettings = () => {
                   </p>
                 </div>
 
+                <button
+                  type="button"
+                  onClick={() => setEmailDetailsOpen((v) => !v)}
+                  className="mb-5 flex w-full items-center justify-between rounded-md border border-slate-700 bg-slate-800/60 px-4 py-2.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                >
+                  <span>{emailDetailsOpen ? 'Hide' : 'Show'} Email Configuration &amp; Test Email</span>
+                  <span className={`text-slate-400 transition-transform ${emailDetailsOpen ? 'rotate-180' : ''}`}>▾</span>
+                </button>
+
+                {emailDetailsOpen && (
+                <>
                 {/* Mailgun section */}
                 <div className="mb-5">
                   <p className="mb-2 text-xs font-medium text-slate-400 uppercase tracking-wide">Mailgun</p>
@@ -1198,10 +1284,74 @@ export const ServerSettings = () => {
                     </div>
                   )}
                 </div>
+                </>
+                )}
               </div>
             </div>
-            {/* Right col — empty for now */}
-            <div className="col-span-12 lg:col-span-6"></div>
+            {/* Right col — Notification Settings */}
+            <div className="col-span-12 lg:col-span-6">
+              <div className="rounded-lg border border-amber-700/40 bg-amber-950/20 p-4">
+                <h3 className="mb-1 text-sm font-semibold uppercase tracking-wide text-amber-300">Notification Settings</h3>
+                <p className="mb-4 text-xs text-slate-400">Control how many automated emails a trader can receive per day, and which event types trigger one.</p>
+
+                {notifMessage && (
+                  <div className={`mb-4 rounded-md border px-3 py-2 text-xs ${
+                    notifMessage.type === 'success'
+                      ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-300'
+                      : 'border-rose-500/70 bg-rose-500/10 text-rose-300'
+                  }`}>
+                    {notifMessage.text}
+                  </div>
+                )}
+
+                <div className="mb-5">
+                  <label className="mb-1 block text-xs text-slate-300">Max Emails Per Trader / Day</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={notifSettings.dailyCap}
+                    onChange={(e) => handleNotifCapChange(e.target.value)}
+                    className="h-9 w-full max-w-[160px] rounded-md border border-slate-700 bg-slate-800 px-3 text-sm text-slate-100 placeholder-slate-500 focus:border-amber-500 focus:outline-none"
+                  />
+                  <p className="mt-1 text-[11px] text-slate-500">Once a trader hits this limit, further automated emails are skipped for the rest of the day.</p>
+                </div>
+
+                <div className="mb-6">
+                  <p className="mb-2 text-xs font-medium text-slate-400 uppercase tracking-wide">Email Types Traders Can Receive</p>
+                  <div className="space-y-2">
+                    {[
+                      { key: 'deposit', label: 'Deposit Approved', desc: 'Sent when an admin approves a deposit request.' },
+                      { key: 'withdrawal', label: 'Withdrawal Processed', desc: 'Sent when a withdrawal is approved or rejected.' },
+                      { key: 'trade', label: 'Trade Executed', desc: 'Sent every time a trade is opened.' },
+                    ].map((item) => (
+                      <label
+                        key={item.key}
+                        className="flex cursor-pointer items-start gap-3 rounded-md border border-slate-700/60 bg-slate-800/30 px-3 py-2.5 hover:bg-slate-800/50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={notifSettings.typesEnabled[item.key]}
+                          onChange={() => handleNotifTypeToggle(item.key)}
+                          className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-900 text-amber-500 focus:ring-amber-500"
+                        />
+                        <span>
+                          <span className="block text-sm text-slate-100">{item.label}</span>
+                          <span className="block text-[11px] text-slate-500">{item.desc}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleNotifSave}
+                  disabled={notifSaving}
+                  className="rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {notifSaving ? 'Saving...' : 'Save Notification Settings'}
+                </button>
+              </div>
+            </div>
           </div>
 
           {showResetUserModal && (

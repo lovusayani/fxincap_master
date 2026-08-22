@@ -198,7 +198,7 @@ export default function TradingLayout({
           <div
             className="overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,22,37,.96),rgba(12,14,26,.94))] shadow-[0_10px_30px_rgba(0,0,0,0.35)] transition-all duration-500 ease-in-out"
             style={{
-              height: showDesktopBottomPanel ? (chartDensity === "expanded" ? 220 : 280) : 48,
+              height: showDesktopBottomPanel ? (chartDensity === "expanded" ? 440 : 560) : 48,
             }}
           >
             <button
@@ -213,7 +213,7 @@ export default function TradingLayout({
                 {showDesktopBottomPanel ? <ChevronLeft className="h-4 w-4 rotate-90" /> : <ChevronRight className="h-4 w-4 rotate-90" />}
               </div>
             </button>
-            <div className={`min-h-0 overflow-hidden transition-opacity duration-300 ${showDesktopBottomPanel ? "opacity-100" : "pointer-events-none opacity-0"}`} style={{ height: showDesktopBottomPanel ? (chartDensity === "expanded" ? 172 : 232) : 0 }}>
+            <div className={`min-h-0 overflow-hidden transition-opacity duration-300 ${showDesktopBottomPanel ? "opacity-100" : "pointer-events-none opacity-0"}`} style={{ height: showDesktopBottomPanel ? (chartDensity === "expanded" ? 344 : 464) : 0 }}>
               {bottomTabs}
             </div>
           </div>

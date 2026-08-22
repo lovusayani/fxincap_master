@@ -12,6 +12,7 @@ import {
   ensureUserEmailVerificationSupport,
   verifyUserEmailCode,
 } from "../services/userEmailVerification.js";
+import { requestPasswordReset, confirmPasswordReset } from "../services/userPasswordReset.js";
 
 const router: Router = Router();
 
@@ -409,6 +410,48 @@ router.post("/change-password", verifyToken, async (req: AuthRequest, res: Respo
   } catch (error: any) {
     console.error("Change password error:", error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/forgot-password", async (req: Request, res: Response) => {
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    if (!email || !emailRegex.test(email)) {
+      return res.status(400).json({ success: false, error: "Enter a valid email address" });
+    }
+
+    await requestPasswordReset(email);
+    // Always a generic response — never reveal whether the email exists.
+    res.json({ success: true, message: "If an account exists for this email, a reset code has been sent." });
+  } catch (error: any) {
+    console.error("Forgot password error:", error);
+    res.status(500).json({ success: false, error: error.message || "Unable to process request" });
+  }
+});
+
+router.post("/reset-password", async (req: Request, res: Response) => {
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const code = String(req.body?.code || "").trim();
+    const newPassword = String(req.body?.newPassword || "");
+
+    if (!email || !code) {
+      return res.status(400).json({ success: false, error: "Email and reset code are required" });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ success: false, error: "Password must be at least 6 characters" });
+    }
+    if (!uppercaseRegex.test(newPassword) || !lowercaseRegex.test(newPassword) || !numberRegex.test(newPassword) || !specialRegex.test(newPassword)) {
+      return res.status(400).json({
+        success: false,
+        error: "Password must contain an uppercase letter, a lowercase letter, a number, and a special character",
+      });
+    }
+
+    await confirmPasswordReset(email, code, newPassword);
+    res.json({ success: true, message: "Password reset successfully. You can now log in." });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error.message || "Unable to reset password" });
   }
 });
 

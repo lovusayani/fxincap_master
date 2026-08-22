@@ -11,6 +11,8 @@ import DepositPage from "@/pages/Deposit";
 import WithdrawPage from "@/pages/Withdraw";
 import LoginPage from "@/pages/Login";
 import RegisterPage from "@/pages/Register";
+import ForgotPasswordPage from "@/pages/ForgotPassword";
+import ResetPasswordPage from "@/pages/ResetPassword";
 import SupportPage from "@/pages/Support";
 import StrategyPage from "@/pages/Strategy";
 import TradeMasterPage from "@/pages/TradeMaster";
@@ -577,6 +579,8 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route path="/auto-login" element={<AutoLoginPage />} />
 
           <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
