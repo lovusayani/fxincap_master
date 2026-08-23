@@ -3,21 +3,29 @@ import "./globals.css";
 import VisualEditsMessenger from "../visual-edits/VisualEditsMessenger";
 import ErrorReporter from "@/components/ErrorReporter";
 import Script from "next/script";
+import { BrandProvider } from "@/components/BrandProvider";
+import { fetchPlatformBranding } from "@/lib/platform-branding";
 
-export const metadata: Metadata = {
-  title: " Suimfx - Forex Trading Platform",
-  description: "Professional Forex Trading Platform",
-  icons: {
-    icon: '/logo/logo_white.png',
-    dark: '/logo/logo_dark.png',
-  },
-};
+// Title follows the admin-configured App Name, so renaming the platform in
+// Miscellaneous Settings updates the browser tab here too.
+export async function generateMetadata(): Promise<Metadata> {
+  const { appName, logoSquareUrl } = await fetchPlatformBranding();
+  return {
+    title: `${appName} - Forex Trading Platform`,
+    description: `Professional Forex Trading Platform`,
+    icons: {
+      icon: logoSquareUrl || '/logo/logo_white.png',
+      dark: logoSquareUrl || '/logo/logo_dark.png',
+    },
+  };
+}
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const branding = await fetchPlatformBranding();
   return (
     <html lang="en">
       <body className="antialiased">
@@ -32,7 +40,7 @@ export default function RootLayout({
           data-debug="true"
           data-custom-data='{"appName": "YourApp", "version": "1.0.0", "greeting": "hi"}'
         />
-        {children}
+        <BrandProvider initial={branding}>{children}</BrandProvider>
         <VisualEditsMessenger />
       </body>
     </html>

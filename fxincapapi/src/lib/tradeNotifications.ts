@@ -1,5 +1,6 @@
 import { sendEmail } from "./mailer.js";
 import { canSendNotification, recordNotificationSent, type NotificationCategory } from "./notificationSettings.js";
+import { getEmailBranding, renderBrandedEmail } from "./emailBranding.js";
 
 async function sendGatedEmail(
   userId: string,
@@ -20,15 +21,11 @@ async function sendGatedEmail(
   }
 }
 
-const wrap = (title: string, accentColor: string, bodyHtml: string) => `
-  <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#0b0f1a;color:#e2e8f0;border-radius:12px">
-    <h2 style="color:${accentColor};margin:0 0 16px">${title}</h2>
-    ${bodyHtml}
-    <p style="color:#64748b;font-size:12px;margin-top:24px;border-top:1px solid #1e293b;padding-top:12px">
-      This is an automated notification from your trading account.
-    </p>
-  </div>
-`;
+/** Branding (logo/header/footer) is admin-editable, so it is read per send. */
+const wrap = async (title: string, accentColor: string, bodyHtml: string) => {
+  const branding = await getEmailBranding();
+  return renderBrandedEmail({ branding, title, accentColor, bodyHtml });
+};
 
 export async function notifyDepositApproved(input: {
   userId: string;
@@ -39,7 +36,7 @@ export async function notifyDepositApproved(input: {
   accountNumber?: string | null;
 }): Promise<void> {
   const currency = input.currency || "USD";
-  const html = wrap(
+  const html = await wrap(
     "Deposit Approved",
     "#22c55e",
     `
@@ -67,7 +64,7 @@ export async function notifyWithdrawalProcessed(input: {
 }): Promise<void> {
   const currency = input.currency || "USD";
   const isApproved = input.status === "approved";
-  const html = wrap(
+  const html = await wrap(
     isApproved ? "Withdrawal Approved" : "Withdrawal Rejected",
     isApproved ? "#22c55e" : "#f43f5e",
     `
@@ -98,7 +95,7 @@ export async function notifyTradeExecuted(input: {
   entryPrice: number;
   accountNumber?: string | null;
 }): Promise<void> {
-  const html = wrap(
+  const html = await wrap(
     "Trade Executed",
     "#38bdf8",
     `

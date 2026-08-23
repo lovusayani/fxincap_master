@@ -126,6 +126,9 @@ export default function Markets() {
   const lastTickRef = useRef<number>(0);
 
   const { toast } = useToast();
+  // Market-closed is surfaced as a blocking dialog rather than a toast: it stops
+  // the order outright, so it needs an explicit acknowledgement.
+  const [marketClosed, setMarketClosed] = useState<{ symbol: string; side: string; message: string } | null>(null);
   const prices = useMarketStream(ALL_SYMBOLS);
   const accountBal = useAccountBalance(refreshKey);
 
@@ -372,6 +375,12 @@ export default function Markets() {
         setTp("");
         if (isPendingOrder) setPendingPrice("");
         setRefreshKey((value) => value + 1);
+      } else if (data.code === "MARKET_CLOSED") {
+        setMarketClosed({
+          symbol: data.symbol || selectedSymbol,
+          side,
+          message: data.error || data.message || "This market is currently closed.",
+        });
       } else {
         toast({
           title: "✗ Order Failed",
@@ -439,6 +448,48 @@ export default function Markets() {
         submitting={submitting}
         ticketBalancePreview={ticketBalancePreview}
       />
+
+      {marketClosed && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="market-closed-title"
+          onClick={() => setMarketClosed(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl border border-amber-500/30 bg-[#101321] p-6 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/15">
+                <span className="text-xl">🕒</span>
+              </div>
+              <div>
+                <h2 id="market-closed-title" className="text-base font-bold text-white">Market Closed</h2>
+                <p className="text-xs text-gray-400">
+                  {marketClosed.symbol} · {marketClosed.side}
+                </p>
+              </div>
+            </div>
+
+            <p className="mb-5 text-sm leading-relaxed text-gray-300">
+              <span className="font-semibold text-amber-300">{marketClosed.symbol}</span> is not
+              tradable right now, so your {marketClosed.side.toLowerCase()} order was not placed.
+              Please try again once the market reopens.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setMarketClosed(null)}
+              className="w-full rounded-xl bg-amber-500 py-2.5 text-sm font-semibold text-black transition hover:bg-amber-400"
+              autoFocus
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

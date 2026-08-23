@@ -1,10 +1,10 @@
 import { Info } from 'lucide-react';
 import React from 'react';
+import { fetchPlatformBranding } from "@/lib/platform-branding";
+import { TradeLink } from "@/components/TradeLink";
 
-const DASHBOARD_URL =
-  process.env.NEXT_PUBLIC_DASHBOARD_URL?.replace(/\/$/, "") || "https://user. Suimfx.com";
-
-const HeroGoldPromotion = () => {
+const HeroGoldPromotion = async () => {
+  const { appName } = await fetchPlatformBranding();
   return (
     <section className="relative h-screen min-h-[700px] w-full overflow-hidden bg-black text-white">
       <video
@@ -33,7 +33,7 @@ const HeroGoldPromotion = () => {
         <div className="container">
           <div className="max-w-xl">
             <h3 className="font-ui text-sm font-medium uppercase tracking-[0.1em] text-[#CCCCCC]">
-               Suimfx
+              {appName}
             </h3>
 
             <h1 className="mt-4 font-headline text-[56px] font-light leading-none text-[#d4af86] lg:text-[72px]">
@@ -41,26 +41,22 @@ const HeroGoldPromotion = () => {
             </h1>
 
             <p className="mt-4 max-w-md text-lg font-normal leading-relaxed text-white">
-              Unlock your piece of the forex market with  Suimfx — the world's most advanced trading ecosystem for brokers, traders, and financial businesses.
+              Unlock your piece of the forex market with {appName} — the world's most advanced trading ecosystem for brokers, traders, and financial businesses.
             </p>
 
             <div className="mt-6 flex gap-4">
-        <a
-          href={`${DASHBOARD_URL}/login`}
-          target="_blank"
-          rel="noopener noreferrer"
+        <TradeLink
+          path="/login"
           className="inline-block rounded-full bg-white px-6 py-[14px] text-sm font-medium text-black transition-transform duration-200 hover:scale-[1.02]"
         >
           Login
-        </a>
-        <a
-          href={`${DASHBOARD_URL}/register`}
-          target="_blank"
-          rel="noopener noreferrer"
+        </TradeLink>
+        <TradeLink
+          path="/register"
           className="inline-block rounded-full border-2 border-white px-6 py-[14px] text-sm font-medium text-white transition-transform duration-200 hover:scale-[1.02] hover:bg-white hover:text-black"
         >
           Sign Up
-        </a>
+        </TradeLink>
             </div>
           </div>
         </div>

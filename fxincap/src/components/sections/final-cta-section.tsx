@@ -1,6 +1,9 @@
+import { fetchPlatformBranding } from "@/lib/platform-branding";
+import { TradeLink } from "@/components/TradeLink";
 import React from 'react';
 
-const FinalCtaSection = () => {
+const FinalCtaSection = async () => {
+  const { appName } = await fetchPlatformBranding();
   return (
     <section className="relative overflow-hidden bg-black text-white">
       <div className="absolute inset-0 z-0">
@@ -21,26 +24,22 @@ const FinalCtaSection = () => {
           Ready to Launch?
         </h1>
         <p className="mt-6 text-lg text-white/80 md:max-w-[500px]">
-          Become a  Suimfx partner today and access the world's most complete forex trading technology — built for performance, trust, and growth.
+          Become a {appName} partner today and access the world's most complete forex trading technology — built for performance, trust, and growth.
         </p>
         <div className="h-8" />
         <div className="flex gap-4 flex-wrap justify-center">
-          <a
-            href="https://dashboard.suimfx.world/login"
-            target="_blank"
-            rel="noopener noreferrer"
+          <TradeLink
+            path="/login"
             className="inline-block rounded-full bg-[#D4FF00] px-7 py-[14px] font-ui text-sm font-bold leading-none text-black transition-transform duration-200 ease-out hover:scale-[1.02]"
           >
             <span>Login</span>
-          </a>
-          <a
-            href="https://dashboard.suimfx.world/register"
-            target="_blank"
-            rel="noopener noreferrer"
+          </TradeLink>
+          <TradeLink
+            path="/register"
             className="inline-block rounded-full border-2 border-white px-7 py-[14px] font-ui text-sm font-bold leading-none text-white transition-transform duration-200 ease-out hover:scale-[1.02] hover:bg-white hover:text-black"
           >
             <span>Sign Up</span>
-          </a>
+          </TradeLink>
           <a
             href="#"
             className="inline-block rounded-full border-2 border-white px-7 py-[14px] font-ui text-sm font-bold leading-none text-white transition-transform duration-200 ease-out hover:scale-[1.02] hover:bg-white hover:text-black"

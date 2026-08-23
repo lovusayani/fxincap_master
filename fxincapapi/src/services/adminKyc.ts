@@ -1,5 +1,42 @@
 import { query } from "../lib/database.js";
 
+/**
+ * kyc_documents only ever existed in src/lib/schema.sql, which is MySQL syntax
+ * and was never applied to this PostgreSQL database. Created lazily here (as
+ * trade_history and friends already are) so a fresh install works out of the
+ * box; migrations/010_kyc_documents.sql is the canonical definition.
+ */
+let ensureKycTablePromise: Promise<void> | null = null;
+
+export async function ensureKycDocumentsTable(): Promise<void> {
+  if (!ensureKycTablePromise) {
+    ensureKycTablePromise = (async () => {
+      await query(`
+        CREATE TABLE IF NOT EXISTS kyc_documents (
+          id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id          UUID NOT NULL,
+          document_type    VARCHAR(50),
+          document_url     VARCHAR(255),
+          document_number  VARCHAR(100),
+          issue_date       DATE,
+          expiry_date      DATE,
+          status           VARCHAR(20) NOT NULL DEFAULT 'pending',
+          rejection_reason TEXT,
+          created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+      await query(`CREATE INDEX IF NOT EXISTS idx_kyc_documents_user_id ON kyc_documents(user_id)`);
+      await query(`CREATE INDEX IF NOT EXISTS idx_kyc_documents_status ON kyc_documents(status)`);
+    })().catch((error) => {
+      // Let a later call retry rather than caching the failure forever.
+      ensureKycTablePromise = null;
+      throw error;
+    });
+  }
+  await ensureKycTablePromise;
+}
+
 export interface KycDocument {
   id: string;
   userId: string;
@@ -31,6 +68,7 @@ function sanitizeOffset(offset?: number) {
 }
 
 export async function fetchKycDocuments(options: ListOptions = {}): Promise<KycDocument[]> {
+  await ensureKycDocumentsTable();
   const limit = sanitizeLimit(options.limit);
   const offset = sanitizeOffset(options.offset);
   const where: string[] = [];
@@ -78,6 +116,7 @@ export async function fetchKycDocuments(options: ListOptions = {}): Promise<KycD
 }
 
 export async function fetchKycDocumentById(id: string): Promise<KycDocument | null> {
+  await ensureKycDocumentsTable();
   const rows: any = await query(
     `SELECT kd.*, u.email AS user_email,
             CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')) AS user_name
@@ -105,6 +144,7 @@ export async function fetchKycDocumentById(id: string): Promise<KycDocument | nu
 }
 
 export async function updateKycStatus(id: string, status: "approved" | "rejected") {
+  await ensureKycDocumentsTable();
   const result: any = await query(
     "UPDATE kyc_documents SET status = ?, updated_at = NOW() WHERE id = ?",
     [status, id]

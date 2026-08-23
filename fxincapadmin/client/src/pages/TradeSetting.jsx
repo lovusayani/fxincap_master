@@ -146,6 +146,35 @@ export const TradeSetting = () => {
     })
   }
 
+  /**
+   * Flip BUY <-> SELL on an open trade. Margin is unaffected (it does not
+   * depend on direction), but the position's P&L inverts, and any SL/TP that
+   * ends up on the wrong side of entry is cleared server-side — those are
+   * surfaced back as warnings so the admin knows the levels are gone.
+   */
+  const swapSideFromModal = () => {
+    const nextSide = String(detail.side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY'
+    const hasLevels = detail.stopLoss != null || detail.takeProfit != null
+    if (!window.confirm(
+      `Swap trade #${detail.id} from ${detail.side} to ${nextSide} on ${detail.symbol}?\n\n` +
+      `The position's P&L direction reverses — a losing trade becomes winning and vice versa. ` +
+      `Entry price and locked margin stay the same.` +
+      (hasLevels ? `\n\nAny stop loss / take profit that no longer sits on the correct side of entry will be cleared.` : '')
+    )) return
+    runAction(async () => {
+      const res = await fetch(`/api/admin/trades/${detail.id}`, {
+        method: 'PATCH',
+        headers: { ...authH, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ side: nextSide }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || json?.success === false) throw new Error(json?.error || `Swap failed (HTTP ${res.status})`)
+      const warn = Array.isArray(json?.warnings) && json.warnings.length ? ` (${json.warnings.join('; ')})` : ''
+      setNotice(`Swapped #${detail.id} to ${nextSide}${warn}`)
+      setDetail(null)
+    })
+  }
+
   const deleteFromModal = () => {
     if (!window.confirm(
       `Permanently DELETE trade #${detail.id} (${detail.side} ${detail.symbol})?\n\n` +
@@ -477,6 +506,11 @@ export const TradeSetting = () => {
                   <button onClick={closeFromModal} disabled={busyId === detail.id}
                     className="rounded-md bg-amber-700 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-600 disabled:opacity-40">
                     Close Trade
+                  </button>
+                  <button onClick={swapSideFromModal} disabled={busyId === detail.id}
+                    title={`Swap direction to ${String(detail.side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY'}`}
+                    className="rounded-md bg-sky-700 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-600 disabled:opacity-40">
+                    Swap → {String(detail.side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY'}
                   </button>
                 </>
               )}

@@ -2,6 +2,7 @@ import { GlobalStyle } from './styles/GlobalStyle'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Layout } from './components/Layout'
 import { BlankPage } from './pages/BlankPage'
+import { Dashboard } from './pages/Dashboard'
 import { MemberList } from './pages/MemberList'
 import { MemberProfile } from './pages/MemberProfile'
 import { Register } from './pages/Register'
@@ -30,6 +31,11 @@ import { SubAgentsList } from './pages/SubAgentsList'
 import { AccountTypes } from './pages/AccountTypes'
 import { IBProgram } from './pages/IBProgram'
 import { MamPam } from './pages/MamPam'
+import { PageSetting } from './pages/PageSetting'
+import { EmailSettings } from './pages/EmailSettings'
+import { TransactionsReport } from './pages/TransactionsReport'
+import { BalanceSheetReport } from './pages/BalanceSheetReport'
+import { TradingReport } from './pages/TradingReport'
 
 function App() {
   return (
@@ -54,8 +60,8 @@ function App() {
               </ProtectedRoute>
             }
           > 
-            <Route index element={<BlankPage />} />
-            <Route path="dashboard" element={<BlankPage />} />
+            <Route index element={<Dashboard />} />
+            <Route path="dashboard" element={<Dashboard />} />
             <Route path="members/list" element={<MemberList />} />
             <Route path="members/profile" element={<MemberProfile />} />
             <Route path="members/profile/:id" element={<MemberProfile />} />
@@ -75,6 +81,11 @@ function App() {
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="server-settings" element={<ServerSettings />} />
             <Route path="miscellaneous-settings" element={<MiscellaneousSettings />} />
+            <Route path="page-setting" element={<PageSetting />} />
+            <Route path="email-setting" element={<EmailSettings />} />
+            <Route path="reports/transactions" element={<TransactionsReport />} />
+            <Route path="reports/balance-sheet" element={<BalanceSheetReport />} />
+            <Route path="reports/trading" element={<TradingReport />} />
             <Route path="ib-program" element={<IBProgram />} />
             <Route path="mam-pam" element={<MamPam />} />
             <Route path="*" element={<Navigate to="/" replace />} />

@@ -216,27 +216,45 @@ export type ActivationEmailPayload = {
 };
 
 /**
- * Send the branded activation/verification email using the
- * HTML template stored in uploads/mails/templates/.
- * Replaces '123456' with the real code and the placeholder href with the real link.
+ * Send the activation/verification email.
+ *
+ * Rendered through the shared branded shell so the admin-configured logo,
+ * header, footer and registration body copy apply here exactly as they do to
+ * the deposit/withdrawal/trade notifications. The legacy SendGrid-exported
+ * template is still used as a fallback if branding cannot be loaded.
  */
 export const sendActivationEmail = async (
   payload: ActivationEmailPayload
 ): Promise<void> => {
   let html: string;
-  try {
-    html = fs.readFileSync(ACTIVATION_TEMPLATE_PATH, "utf8");
-  } catch {
-    throw new Error(`Activation email template not found at ${ACTIVATION_TEMPLATE_PATH}`);
-  }
 
-  // Replace placeholder values injected in the template design
-  html = html.replace(/123456/g, payload.activationCode);
-  html = html.replace(
-    /href="https:\/\/www\.google\.com"/g,
-    `href="${payload.activationLink}"`
-  );
-  html = html.replace(/\bfirstname\b/g, payload.firstName);
+  try {
+    const { getEmailBranding, renderBrandedEmail, escapeEmailHtmlWithBreaks } = await import("./emailBranding.js");
+    const branding = await getEmailBranding();
+    html = renderBrandedEmail({
+      branding,
+      title: "Verify your email address",
+      accentColor: "#f6d505",
+      bodyHtml: `
+        <p style="margin:0 0 12px">Hi ${payload.firstName || "there"},</p>
+        <p style="margin:0 0 18px;color:#cbd5e1;line-height:1.6">${escapeEmailHtmlWithBreaks(branding.bodyRegistration)}</p>
+        <p style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#f8fafc;margin:20px 0;text-align:center">${payload.activationCode}</p>
+        <p style="margin:22px 0;text-align:center">
+          <a href="${payload.activationLink}" style="background:#ffe300;color:#000;padding:12px 32px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">Verify Email</a>
+        </p>
+      `,
+    });
+  } catch (error) {
+    console.warn("[MAILER] Branded activation render failed, falling back to template file:", error);
+    try {
+      html = fs.readFileSync(ACTIVATION_TEMPLATE_PATH, "utf8");
+    } catch {
+      throw new Error(`Activation email template not found at ${ACTIVATION_TEMPLATE_PATH}`);
+    }
+    html = html.replace(/123456/g, payload.activationCode);
+    html = html.replace(/href="https:\/\/www\.google\.com"/g, `href="${payload.activationLink}"`);
+    html = html.replace(/\bfirstname\b/g, payload.firstName);
+  }
 
   await sendEmail({
     to: payload.to,

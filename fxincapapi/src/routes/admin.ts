@@ -40,6 +40,7 @@ import { fileURLToPath } from "url";
 import { imageSizeFromFile } from "image-size/fromFile";
 import { getStoredEmailSettings, maskEmailApiKey, saveStoredEmailSettings } from "../lib/email-settings.js";
 import { getNotificationSettings, saveNotificationSettings } from "../lib/notificationSettings.js";
+import { getEmailBranding, saveEmailBranding, EMAIL_BRANDING_DEFAULTS } from "../lib/emailBranding.js";
 import {
   getEmailProvider,
   getStoredSmtpSettings,
@@ -416,9 +417,525 @@ router.get("/analytics", verifyToken, async (req: AuthRequest, res: Response) =>
   res.json({ totalUsers: 0, totalDeposits: 0, totalWithdrawals: 0 });
 });
 
+/**
+ * Dashboard summary — every figure the admin landing page shows, in one call.
+ *
+ * Deliberately one round trip rather than a dozen: the page renders all of it
+ * at once, and separate endpoints would make the dashboard the slowest screen
+ * in the panel. `days` bounds the time series (default 14, max 90).
+ */
+router.get("/dashboard-stats", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 90);
+
+    // Run in small batches rather than one big Promise.all: the managed database
+    // caps total connections, and fanning out every query at once could claim
+    // the whole pool and starve concurrent requests.
+    const runBatched = async <T,>(factories: Array<() => Promise<T>>, size = 3): Promise<T[]> => {
+      const out: T[] = [];
+      for (let i = 0; i < factories.length; i += size) {
+        out.push(...(await Promise.all(factories.slice(i, i + size).map((fn) => fn()))));
+      }
+      return out;
+    };
+
+    const [
+      traderRows,
+      accountRows,
+      fundRows,
+      tradeRows,
+      pendingRows,
+      fundSeriesRows,
+      tradeSeriesRows,
+      latestTradeRows,
+      topSymbolRows,
+      signupSeriesRows,
+    ] = await runBatched([
+      () => query(`
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN 1 ELSE 0 END) AS new_30d,
+          SUM(CASE WHEN email_verified THEN 1 ELSE 0 END) AS verified
+        FROM users
+      `),
+      () => query(`
+        SELECT
+          COUNT(*) FILTER (WHERE trading_mode = 'real') AS real_accounts,
+          COUNT(*) FILTER (WHERE trading_mode = 'demo') AS demo_accounts,
+          COALESCE(SUM(balance) FILTER (WHERE trading_mode = 'real'), 0) AS real_balance,
+          COALESCE(SUM(balance) FILTER (WHERE trading_mode = 'demo'), 0) AS demo_balance,
+          COALESCE(SUM(locked_balance) FILTER (WHERE trading_mode = 'real'), 0) AS locked_balance
+        FROM user_accounts
+      `),
+      () => query(`
+        SELECT
+          COALESCE(SUM(amount) FILTER (WHERE type = 'deposit'    AND status = 'completed'), 0) AS deposit_total,
+          COALESCE(SUM(amount) FILTER (WHERE type = 'withdrawal' AND status = 'completed'), 0) AS withdrawal_total,
+          COUNT(*) FILTER (WHERE type = 'deposit'    AND status = 'completed') AS deposit_count,
+          COUNT(*) FILTER (WHERE type = 'withdrawal' AND status = 'completed') AS withdrawal_count
+        FROM fund_requests
+      `),
+      () => query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'OPEN')   AS open_trades,
+          COUNT(*) FILTER (WHERE status = 'CLOSED') AS closed_trades,
+          COALESCE(SUM(locked_balance) FILTER (WHERE status = 'OPEN'), 0) AS margin_locked
+        FROM trades
+      `),
+      () => query(`
+        SELECT
+          COUNT(*) FILTER (WHERE type = 'deposit')    AS pending_deposits,
+          COUNT(*) FILTER (WHERE type = 'withdrawal') AS pending_withdrawals,
+          COALESCE(SUM(amount) FILTER (WHERE type = 'deposit'), 0)    AS pending_deposit_amount,
+          COALESCE(SUM(amount) FILTER (WHERE type = 'withdrawal'), 0) AS pending_withdrawal_amount
+        FROM fund_requests
+        WHERE status IN ('pending', 'processing')
+      `),
+      // Series are generated off a date spine so quiet days render as zero
+      // instead of collapsing the chart's x-axis.
+      () => query(`
+        SELECT
+          to_char(d.day, 'YYYY-MM-DD') AS day,
+          COALESCE(SUM(fr.amount) FILTER (WHERE fr.type = 'deposit'), 0)    AS deposits,
+          COALESCE(SUM(fr.amount) FILTER (WHERE fr.type = 'withdrawal'), 0) AS withdrawals
+        FROM generate_series(CURRENT_DATE - ($1::int - 1), CURRENT_DATE, '1 day') AS d(day)
+        LEFT JOIN fund_requests fr
+          ON fr.created_at::date = d.day AND fr.status = 'completed'
+        GROUP BY d.day
+        ORDER BY d.day
+      `, [days]),
+      () => query(`
+        SELECT
+          to_char(d.day, 'YYYY-MM-DD') AS day,
+          COUNT(th.id) AS trades,
+          COALESCE(SUM(th.profit), 0) AS pnl
+        FROM generate_series(CURRENT_DATE - ($1::int - 1), CURRENT_DATE, '1 day') AS d(day)
+        LEFT JOIN trade_history th ON th.close_time::date = d.day
+        GROUP BY d.day
+        ORDER BY d.day
+      `, [days]),
+      () => query(`
+        SELECT th.id, th.symbol, th.side, th.volume, th.open_price, th.close_price,
+               th.profit, th.close_time,
+               u.first_name, u.last_name, u.email,
+               ua.account_number
+          FROM trade_history th
+          LEFT JOIN users u ON u.id = th.user_id
+          LEFT JOIN user_accounts ua ON ua.id = th.account_id
+         ORDER BY th.close_time DESC NULLS LAST
+         LIMIT 10
+      `),
+      () => query(`
+        SELECT symbol,
+               COUNT(*) AS trades,
+               COALESCE(SUM(profit), 0) AS pnl,
+               COUNT(*) FILTER (WHERE profit >= 0) AS wins
+          FROM trade_history
+         GROUP BY symbol
+         ORDER BY trades DESC
+         LIMIT 6
+      `),
+      () => query(`
+        SELECT to_char(d.day, 'YYYY-MM-DD') AS day, COUNT(u.id) AS signups
+        FROM generate_series(CURRENT_DATE - ($1::int - 1), CURRENT_DATE, '1 day') AS d(day)
+        LEFT JOIN users u ON u.created_at::date = d.day
+        GROUP BY d.day
+        ORDER BY d.day
+      `, [days]),
+    ]) as any[][];
+
+    const first = (rows: any[]) => (Array.isArray(rows) && rows[0]) || {};
+    const t = first(traderRows);
+    const a = first(accountRows);
+    const f = first(fundRows);
+    const tr = first(tradeRows);
+    const p = first(pendingRows);
+
+    const closedTrades = Number(tr.closed_trades || 0);
+    const winRows = await query(
+      `SELECT COUNT(*) FILTER (WHERE profit >= 0) AS wins, COUNT(*) AS total FROM trade_history`
+    ) as any[];
+    const w = first(winRows);
+
+    res.json({
+      success: true,
+      data: {
+        traders: {
+          total: Number(t.total || 0),
+          active: Number(t.active || 0),
+          verified: Number(t.verified || 0),
+          new30d: Number(t.new_30d || 0),
+        },
+        accounts: {
+          real: Number(a.real_accounts || 0),
+          demo: Number(a.demo_accounts || 0),
+          realBalance: Number(a.real_balance || 0),
+          demoBalance: Number(a.demo_balance || 0),
+          lockedBalance: Number(a.locked_balance || 0),
+        },
+        funds: {
+          depositTotal: Number(f.deposit_total || 0),
+          withdrawalTotal: Number(f.withdrawal_total || 0),
+          depositCount: Number(f.deposit_count || 0),
+          withdrawalCount: Number(f.withdrawal_count || 0),
+          netFlow: Number(f.deposit_total || 0) - Number(f.withdrawal_total || 0),
+        },
+        trades: {
+          open: Number(tr.open_trades || 0),
+          closed: closedTrades,
+          marginLocked: Number(tr.margin_locked || 0),
+          wins: Number(w.wins || 0),
+          totalHistory: Number(w.total || 0),
+          winRate: Number(w.total || 0) > 0
+            ? (Number(w.wins || 0) / Number(w.total || 0)) * 100
+            : 0,
+        },
+        pending: {
+          deposits: Number(p.pending_deposits || 0),
+          withdrawals: Number(p.pending_withdrawals || 0),
+          depositAmount: Number(p.pending_deposit_amount || 0),
+          withdrawalAmount: Number(p.pending_withdrawal_amount || 0),
+        },
+        series: {
+          days,
+          funds: (fundSeriesRows || []).map((r: any) => ({
+            day: r.day,
+            deposits: Number(r.deposits || 0),
+            withdrawals: Number(r.withdrawals || 0),
+          })),
+          trades: (tradeSeriesRows || []).map((r: any) => ({
+            day: r.day,
+            trades: Number(r.trades || 0),
+            pnl: Number(r.pnl || 0),
+          })),
+          signups: (signupSeriesRows || []).map((r: any) => ({
+            day: r.day,
+            signups: Number(r.signups || 0),
+          })),
+        },
+        latestTrades: (latestTradeRows || []).map((r: any) => ({
+          id: r.id,
+          symbol: r.symbol,
+          side: String(r.side || "").toUpperCase(),
+          volume: Number(r.volume || 0),
+          openPrice: Number(r.open_price || 0),
+          closePrice: Number(r.close_price || 0),
+          profit: Number(r.profit || 0),
+          closeTime: r.close_time,
+          traderName: [r.first_name, r.last_name].filter(Boolean).join(" ") || null,
+          traderEmail: r.email || null,
+          accountNumber: r.account_number || null,
+        })),
+        topSymbols: (topSymbolRows || []).map((r: any) => ({
+          symbol: r.symbol,
+          trades: Number(r.trades || 0),
+          pnl: Number(r.pnl || 0),
+          wins: Number(r.wins || 0),
+        })),
+      },
+    });
+  } catch (error: any) {
+    console.error("[ADMIN] dashboard-stats failed:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Get reports
 router.get("/reports", verifyToken, async (req: AuthRequest, res: Response) => {
   res.json([]);
+});
+
+/** Shared date-window parser for the report endpoints. Empty = no bound. */
+function reportDateRange(req: AuthRequest) {
+  const from = String(req.query.from || "").trim();
+  const to = String(req.query.to || "").trim();
+  const valid = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+  return { from: valid(from) ? from : null, to: valid(to) ? to : null };
+}
+
+/**
+ * Transactions report — the money-movement ledger (deposits + withdrawals)
+ * with filters and summary totals. Distinct from /wallet-report, which lists
+ * current per-user balances rather than the movements behind them.
+ */
+router.get("/reports/transactions", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { from, to } = reportDateRange(req);
+    const type = String(req.query.type || "").trim().toLowerCase();
+    const status = String(req.query.status || "").trim().toLowerCase();
+    const search = String(req.query.search || "").trim();
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+
+    const where: string[] = [];
+    const values: any[] = [];
+    if (from) { where.push("fr.created_at >= ?::date"); values.push(from); }
+    if (to) { where.push("fr.created_at < (?::date + 1)"); values.push(to); }
+    if (type === "deposit" || type === "withdrawal") { where.push("fr.type = ?"); values.push(type); }
+    if (status) { where.push("fr.status = ?"); values.push(status); }
+    if (search) {
+      const like = `%${search}%`;
+      where.push("(u.email ILIKE ? OR u.first_name ILIKE ? OR u.last_name ILIKE ? OR fr.reference_number ILIKE ?)");
+      values.push(like, like, like, like);
+    }
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const [rows, summaryRows] = await Promise.all([
+      query(
+        `SELECT fr.id, fr.type, fr.amount, fr.status, fr.method, fr.reference_number,
+                fr.created_at, fr.completed_at,
+                u.email, u.first_name, u.last_name,
+                ua.account_number, ua.trading_mode
+           FROM fund_requests fr
+           LEFT JOIN users u ON u.id = fr.user_id
+           LEFT JOIN user_accounts ua ON ua.id = fr.account_id
+           ${whereClause}
+          ORDER BY fr.created_at DESC
+          LIMIT ${limit}`,
+        values
+      ),
+      query(
+        `SELECT
+           COALESCE(SUM(fr.amount) FILTER (WHERE fr.type='deposit'    AND fr.status='completed'), 0) AS deposits,
+           COALESCE(SUM(fr.amount) FILTER (WHERE fr.type='withdrawal' AND fr.status='completed'), 0) AS withdrawals,
+           COALESCE(SUM(fr.amount) FILTER (WHERE fr.status IN ('pending','processing')), 0) AS pending_amount,
+           COUNT(*) AS total_rows,
+           COUNT(*) FILTER (WHERE fr.status='completed') AS completed_count,
+           COUNT(*) FILTER (WHERE fr.status IN ('pending','processing')) AS pending_count,
+           COUNT(*) FILTER (WHERE fr.status='rejected') AS rejected_count
+         FROM fund_requests fr
+         LEFT JOIN users u ON u.id = fr.user_id
+         ${whereClause}`,
+        values
+      ),
+    ]) as any[][];
+
+    const s = (Array.isArray(summaryRows) && summaryRows[0]) || {};
+    res.json({
+      success: true,
+      data: {
+        rows: (rows || []).map((r: any) => ({
+          id: r.id,
+          type: r.type,
+          amount: Number(r.amount || 0),
+          status: r.status,
+          method: r.method || null,
+          reference: r.reference_number || null,
+          createdAt: r.created_at,
+          completedAt: r.completed_at,
+          traderName: [r.first_name, r.last_name].filter(Boolean).join(" ") || null,
+          traderEmail: r.email || null,
+          accountNumber: r.account_number || null,
+          tradingMode: r.trading_mode || null,
+        })),
+        summary: {
+          deposits: Number(s.deposits || 0),
+          withdrawals: Number(s.withdrawals || 0),
+          net: Number(s.deposits || 0) - Number(s.withdrawals || 0),
+          pendingAmount: Number(s.pending_amount || 0),
+          totalRows: Number(s.total_rows || 0),
+          completedCount: Number(s.completed_count || 0),
+          pendingCount: Number(s.pending_count || 0),
+          rejectedCount: Number(s.rejected_count || 0),
+        },
+      },
+    });
+  } catch (error: any) {
+    console.error("[ADMIN] reports/transactions failed:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Balance sheet — the platform's financial position: what is owed to clients,
+ * what came in, what went out, and how it breaks down by account type.
+ */
+router.get("/reports/balance-sheet", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const [positionRows, fundRows, tradeRows, byTypeRows, byModeRows] = await Promise.all([
+      query(`
+        SELECT
+          COALESCE(SUM(balance)           FILTER (WHERE trading_mode='real'), 0) AS real_balance,
+          COALESCE(SUM(balance)           FILTER (WHERE trading_mode='demo'), 0) AS demo_balance,
+          COALESCE(SUM(equity)            FILTER (WHERE trading_mode='real'), 0) AS real_equity,
+          COALESCE(SUM(locked_balance)    FILTER (WHERE trading_mode='real'), 0) AS locked,
+          COALESCE(SUM(available_balance) FILTER (WHERE trading_mode='real'), 0) AS available,
+          COUNT(*) FILTER (WHERE trading_mode='real') AS real_accounts,
+          COUNT(*) FILTER (WHERE trading_mode='demo') AS demo_accounts
+        FROM user_accounts
+      `),
+      query(`
+        SELECT
+          COALESCE(SUM(amount) FILTER (WHERE type='deposit'    AND status='completed'), 0) AS deposits,
+          COALESCE(SUM(amount) FILTER (WHERE type='withdrawal' AND status='completed'), 0) AS withdrawals,
+          COALESCE(SUM(amount) FILTER (WHERE status IN ('pending','processing')), 0) AS pending
+        FROM fund_requests
+      `),
+      query(`
+        SELECT
+          COALESCE(SUM(profit), 0) AS realised_pnl,
+          COALESCE(SUM(commission), 0) AS commission,
+          COUNT(*) AS closed_trades
+        FROM trade_history
+      `),
+      query(`
+        SELECT COALESCE(at.name, 'Unassigned') AS account_type,
+               COUNT(ua.id) AS accounts,
+               COALESCE(SUM(ua.balance), 0) AS balance,
+               COALESCE(SUM(ua.locked_balance), 0) AS locked
+          FROM user_accounts ua
+          LEFT JOIN account_types at ON at.id = ua.account_type_id
+         WHERE ua.trading_mode = 'real'
+         GROUP BY COALESCE(at.name, 'Unassigned')
+         ORDER BY balance DESC
+      `),
+      query(`
+        SELECT trading_mode,
+               COUNT(*) AS accounts,
+               COALESCE(SUM(balance), 0) AS balance
+          FROM user_accounts
+         GROUP BY trading_mode
+      `),
+    ]) as any[][];
+
+    const p = (Array.isArray(positionRows) && positionRows[0]) || {};
+    const f = (Array.isArray(fundRows) && fundRows[0]) || {};
+    const t = (Array.isArray(tradeRows) && tradeRows[0]) || {};
+
+    const deposits = Number(f.deposits || 0);
+    const withdrawals = Number(f.withdrawals || 0);
+    const clientFunds = Number(p.real_balance || 0);
+
+    res.json({
+      success: true,
+      data: {
+        clientFunds: {
+          realBalance: clientFunds,
+          demoBalance: Number(p.demo_balance || 0),
+          realEquity: Number(p.real_equity || 0),
+          locked: Number(p.locked || 0),
+          available: Number(p.available || 0),
+          realAccounts: Number(p.real_accounts || 0),
+          demoAccounts: Number(p.demo_accounts || 0),
+        },
+        cashFlow: {
+          deposits,
+          withdrawals,
+          net: deposits - withdrawals,
+          pending: Number(f.pending || 0),
+        },
+        trading: {
+          realisedPnl: Number(t.realised_pnl || 0),
+          commission: Number(t.commission || 0),
+          closedTrades: Number(t.closed_trades || 0),
+        },
+        // Net inflow minus what clients currently hold — positive means client
+        // losses have accrued to the platform, negative means client gains.
+        platformPosition: deposits - withdrawals - clientFunds,
+        byAccountType: (byTypeRows || []).map((r: any) => ({
+          accountType: r.account_type,
+          accounts: Number(r.accounts || 0),
+          balance: Number(r.balance || 0),
+          locked: Number(r.locked || 0),
+        })),
+        byMode: (byModeRows || []).map((r: any) => ({
+          mode: r.trading_mode,
+          accounts: Number(r.accounts || 0),
+          balance: Number(r.balance || 0),
+        })),
+      },
+    });
+  } catch (error: any) {
+    console.error("[ADMIN] reports/balance-sheet failed:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Trading report — closed-trade performance grouped by symbol or by trader.
+ */
+router.get("/reports/trading", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { from, to } = reportDateRange(req);
+    const groupBy = String(req.query.groupBy || "symbol").trim().toLowerCase() === "trader" ? "trader" : "symbol";
+
+    const where: string[] = [];
+    const values: any[] = [];
+    if (from) { where.push("th.close_time >= ?::date"); values.push(from); }
+    if (to) { where.push("th.close_time < (?::date + 1)"); values.push(to); }
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const groupExpr = groupBy === "trader"
+      ? "COALESCE(NULLIF(TRIM(CONCAT(COALESCE(u.first_name,''), ' ', COALESCE(u.last_name,''))), ''), u.email, 'Unknown')"
+      : "th.symbol";
+
+    const [rows, summaryRows] = await Promise.all([
+      query(
+        `SELECT ${groupExpr} AS label,
+                COUNT(*) AS trades,
+                COALESCE(SUM(th.volume), 0) AS volume,
+                COALESCE(SUM(th.profit), 0) AS pnl,
+                COUNT(*) FILTER (WHERE th.profit >= 0) AS wins,
+                COUNT(*) FILTER (WHERE th.profit < 0) AS losses,
+                COALESCE(AVG(th.profit), 0) AS avg_pnl,
+                COALESCE(MAX(th.profit), 0) AS best,
+                COALESCE(MIN(th.profit), 0) AS worst
+           FROM trade_history th
+           LEFT JOIN users u ON u.id = th.user_id
+           ${whereClause}
+          GROUP BY ${groupExpr}
+          ORDER BY trades DESC
+          LIMIT 100`,
+        values
+      ),
+      query(
+        `SELECT COUNT(*) AS trades,
+                COALESCE(SUM(th.volume), 0) AS volume,
+                COALESCE(SUM(th.profit), 0) AS pnl,
+                COUNT(*) FILTER (WHERE th.profit >= 0) AS wins
+           FROM trade_history th
+           LEFT JOIN users u ON u.id = th.user_id
+           ${whereClause}`,
+        values
+      ),
+    ]) as any[][];
+
+    const s = (Array.isArray(summaryRows) && summaryRows[0]) || {};
+    const totalTrades = Number(s.trades || 0);
+
+    res.json({
+      success: true,
+      data: {
+        groupBy,
+        rows: (rows || []).map((r: any) => {
+          const trades = Number(r.trades || 0);
+          return {
+            label: r.label,
+            trades,
+            volume: Number(r.volume || 0),
+            pnl: Number(r.pnl || 0),
+            wins: Number(r.wins || 0),
+            losses: Number(r.losses || 0),
+            winRate: trades > 0 ? (Number(r.wins || 0) / trades) * 100 : 0,
+            avgPnl: Number(r.avg_pnl || 0),
+            best: Number(r.best || 0),
+            worst: Number(r.worst || 0),
+          };
+        }),
+        summary: {
+          trades: totalTrades,
+          volume: Number(s.volume || 0),
+          pnl: Number(s.pnl || 0),
+          wins: Number(s.wins || 0),
+          losses: totalTrades - Number(s.wins || 0),
+          winRate: totalTrades > 0 ? (Number(s.wins || 0) / totalTrades) * 100 : 0,
+        },
+      },
+    });
+  } catch (error: any) {
+    console.error("[ADMIN] reports/trading failed:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // Wallet report for admin
@@ -796,11 +1313,17 @@ router.post("/email-settings", verifyToken, async (req: AuthRequest, res: Respon
   try {
     const body = req.body ?? {};
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    // A From header may carry a display name — "NcapFX <noreply@example.com>" —
+    // which is what recipients actually see in their inbox, so accept both forms.
+    const fromRegex = /^(?:[^<>]+<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>|[^\s@]+@[^\s@]+\.[^\s@]+)$/;
 
     // --- Mailgun ---
     const mailgunFrom = String(body.mailgunFrom || "").trim();
-    if (mailgunFrom && !emailRegex.test(mailgunFrom)) {
-      return res.status(400).json({ success: false, error: "Enter a valid Mailgun from email address" });
+    if (mailgunFrom && !fromRegex.test(mailgunFrom)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Enter a valid From address — either "you@example.com" or "Display Name <you@example.com>"',
+      });
     }
     const currentMg = await getStoredEmailSettings();
     const mailgunApiKeyInput = body.mailgunApiKey;
@@ -913,6 +1436,137 @@ router.post("/notification-settings", verifyToken, async (req: AuthRequest, res:
     res.json({ success: true, data: settings, message: "Notification settings saved successfully" });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message || "Failed to save notification settings" });
+  }
+});
+
+/** Static page content (About Us, etc.), keyed by slug. */
+const ensurePageContentTable = async () => {
+  await query(`
+    CREATE TABLE IF NOT EXISTS page_content (
+      slug       VARCHAR(64) PRIMARY KEY,
+      title      VARCHAR(255) NOT NULL DEFAULT '',
+      content    TEXT NOT NULL DEFAULT '',
+      published  BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+};
+
+const ALLOWED_PAGE_SLUGS = new Set(["about-us"]);
+
+router.get("/page-content/:slug", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const slug = String(req.params.slug || "").trim().toLowerCase();
+    if (!ALLOWED_PAGE_SLUGS.has(slug)) {
+      return res.status(400).json({ success: false, error: "Unknown page" });
+    }
+    await ensurePageContentTable();
+    const rows = (await query(
+      `SELECT slug, title, content, published, updated_at FROM page_content WHERE slug = ? LIMIT 1`,
+      [slug]
+    )) as any[];
+    const row = Array.isArray(rows) && rows[0];
+    res.json({
+      success: true,
+      data: row
+        ? {
+            slug: row.slug,
+            title: row.title || "",
+            content: row.content || "",
+            published: row.published !== false,
+            updatedAt: row.updated_at,
+          }
+        : { slug, title: "", content: "", published: true, updatedAt: null },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load page content" });
+  }
+});
+
+router.post("/page-content/:slug", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const slug = String(req.params.slug || "").trim().toLowerCase();
+    if (!ALLOWED_PAGE_SLUGS.has(slug)) {
+      return res.status(400).json({ success: false, error: "Unknown page" });
+    }
+
+    const title = String(req.body?.title ?? "").trim();
+    const content = String(req.body?.content ?? "").trim();
+    const published = req.body?.published === undefined ? true : Boolean(req.body.published);
+
+    if (!title) return res.status(400).json({ success: false, error: "Title is required", fields: ["title"] });
+    if (!content) return res.status(400).json({ success: false, error: "Content is required", fields: ["content"] });
+
+    await ensurePageContentTable();
+    await query(
+      `INSERT INTO page_content (slug, title, content, published, updated_at)
+       VALUES (?, ?, ?, ?, NOW())
+       ON CONFLICT (slug) DO UPDATE
+         SET title = EXCLUDED.title,
+             content = EXCLUDED.content,
+             published = EXCLUDED.published,
+             updated_at = NOW()`,
+      [slug, title, content, published]
+    );
+
+    res.json({ success: true, data: { slug, title, content, published }, message: "Page content saved successfully" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to save page content" });
+  }
+});
+
+router.get("/email-branding", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const branding = await getEmailBranding();
+    res.json({ success: true, data: branding, defaults: EMAIL_BRANDING_DEFAULTS });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load email branding" });
+  }
+});
+
+router.post("/email-branding", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const body = req.body ?? {};
+    const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+
+    // These drive customer-facing mail, so an accidental blank is rejected
+    // rather than silently falling back to a default.
+    const required: Array<[string, string]> = [
+      ["header", str(body.header)],
+      ["footer", str(body.footer)],
+      ["bodyRegistration", str(body.bodyRegistration)],
+      ["bodyLogin", str(body.bodyLogin)],
+    ];
+    const missing = required.filter(([, value]) => !value).map(([field]) => field);
+    if (missing.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `Required field(s) missing: ${missing.join(", ")}`,
+        fields: missing,
+      });
+    }
+
+    const logoUrl = str(body.logoUrl);
+    if (logoUrl && !/^https?:\/\//i.test(logoUrl)) {
+      return res.status(400).json({
+        success: false,
+        error: "Logo URL must be a full http(s) URL — email clients cannot load relative paths",
+        fields: ["logoUrl"],
+      });
+    }
+
+    const saved = await saveEmailBranding({
+      logoUrl,
+      header: str(body.header),
+      footer: str(body.footer),
+      bodyRegistration: str(body.bodyRegistration),
+      bodyLogin: str(body.bodyLogin),
+    });
+
+    res.json({ success: true, data: saved, message: "Email settings saved successfully" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to save email branding" });
   }
 });
 
@@ -2460,7 +3114,16 @@ router.patch("/trades/:id", async (req: AuthRequest, res: Response) => {
       volume = parsed;
     }
 
-    if (stopLoss === undefined && takeProfit === undefined && volume === undefined) {
+    let side: "BUY" | "SELL" | undefined;
+    if (req.body?.side !== undefined && req.body?.side !== null && req.body?.side !== "") {
+      const normalized = String(req.body.side).trim().toUpperCase();
+      if (normalized !== "BUY" && normalized !== "SELL") {
+        return res.status(400).json({ success: false, error: "side must be BUY or SELL" });
+      }
+      side = normalized;
+    }
+
+    if (stopLoss === undefined && takeProfit === undefined && volume === undefined && side === undefined) {
       return res.status(400).json({ success: false, error: "Nothing to update" });
     }
 
@@ -2472,11 +3135,13 @@ router.patch("/trades/:id", async (req: AuthRequest, res: Response) => {
     // would leave the trader's available balance wrong for the life of the
     // trade. Done under one transaction with a row lock.
     const conn = await getConnection();
+    const warnings: string[] = [];
     try {
       await conn.query("BEGIN");
 
       const locked = await conn.query(
-        `SELECT id, user_id, account_id, symbol, volume, entry_price, leverage, locked_balance
+        `SELECT id, user_id, account_id, symbol, side, volume, entry_price, leverage,
+                locked_balance, stop_loss, take_profit, pnl
            FROM trades WHERE id = $1 AND status = 'OPEN' FOR UPDATE`,
         [tradeId],
       );
@@ -2496,6 +3161,48 @@ router.patch("/trades/:id", async (req: AuthRequest, res: Response) => {
       if (takeProfit !== undefined) {
         params.push(takeProfit);
         sets.push(`take_profit = $${params.length}`);
+      }
+
+      /**
+       * Side swap. Margin is side-independent, so the lock is untouched — but
+       * two things do change:
+       *
+       *  - SL/TP sit on opposite sides of entry for BUY vs SELL. Carrying them
+       *    across a flip would leave a stop that is instantly triggerable, so
+       *    any level that ends up on the wrong side is cleared rather than
+       *    silently left armed.
+       *  - Stored pnl was computed for the old direction; negating it keeps the
+       *    row coherent until the next price tick recomputes it.
+       */
+      const sideChanged = side !== undefined && side !== String(row.side).toUpperCase();
+      if (sideChanged) {
+        params.push(side);
+        sets.push(`side = $${params.length}`);
+
+        const entry = Number(row.entry_price);
+        const effectiveSl = stopLoss !== undefined ? stopLoss : (row.stop_loss === null ? null : Number(row.stop_loss));
+        const effectiveTp = takeProfit !== undefined ? takeProfit : (row.take_profit === null ? null : Number(row.take_profit));
+
+        // BUY expects SL below entry and TP above; SELL is the mirror image.
+        const slValid = effectiveSl === null || (side === "BUY" ? effectiveSl < entry : effectiveSl > entry);
+        const tpValid = effectiveTp === null || (side === "BUY" ? effectiveTp > entry : effectiveTp < entry);
+
+        if (!slValid) {
+          params.push(null);
+          sets.push(`stop_loss = $${params.length}`);
+          warnings.push("stop loss cleared — it was on the wrong side of entry after the swap");
+        }
+        if (!tpValid) {
+          params.push(null);
+          sets.push(`take_profit = $${params.length}`);
+          warnings.push("take profit cleared — it was on the wrong side of entry after the swap");
+        }
+
+        const currentPnl = Number(row.pnl);
+        if (Number.isFinite(currentPnl) && currentPnl !== 0) {
+          params.push(-currentPnl);
+          sets.push(`pnl = $${params.length}`);
+        }
       }
 
       if (volume !== undefined) {
@@ -2547,7 +3254,7 @@ router.patch("/trades/:id", async (req: AuthRequest, res: Response) => {
       `SELECT id, symbol, side, volume, stop_loss, take_profit, locked_balance FROM trades WHERE id = $1`,
       [tradeId],
     );
-    res.json({ success: true, trade: updated?.[0] });
+    res.json({ success: true, trade: updated?.[0], warnings });
   } catch (error: any) {
     res.status(400).json({ success: false, error: error.message });
   }

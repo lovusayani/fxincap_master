@@ -1,24 +1,26 @@
 import Image from "next/image";
+import { fetchPlatformBranding } from "@/lib/platform-branding";
 
-const  SuimfxStrategiesLogo = () => (
+const  SuimfxStrategiesLogo = ({ appName }: { appName: string }) => (
   <svg
     viewBox="0 0 200 32"
-    aria-label=" Suimfx Strategies Logo"
+    aria-label={`${appName} Strategies Logo`}
     role="img"
     className="h-8 w-[200px] text-white"
     fill="currentColor"
   >
-    <text x="0" y="25" fontSize="20" fontWeight="bold" fontFamily="sans-serif"> Suimfx Strategies</text>
+    <text x="0" y="25" fontSize="20" fontWeight="bold" fontFamily="sans-serif">{`${appName} Strategies`}</text>
   </svg>
 );
 
-const StrategiesSection = () => {
+const StrategiesSection = async () => {
+  const { appName } = await fetchPlatformBranding();
   return (
     <section className="relative overflow-hidden bg-[#121A2A]">
       <div className="absolute inset-0">
         <Image
           src="https://slelguoygbfzlpylpxfs.supabase.co/storage/v1/object/public/test-clones/7605a280-297f-425c-8895-09bacf5b13a3-robinhood-com/assets/images/RH25_Strategiespromo_wide_homepage_hero-4.jpeg"
-          alt="Phone mockup showing  Suimfx Strategies portfolio allocation"
+          alt={`Phone mockup showing ${appName} Strategies portfolio allocation`}
           layout="fill"
           objectFit="cover"
           objectPosition="center"
@@ -31,7 +33,7 @@ const StrategiesSection = () => {
           <div className="flex flex-col justify-center">
             <div className="max-w-[470px] text-center lg:text-left mx-auto lg:mx-0">
               <div className="flex justify-center lg:justify-start mb-6">
-                < SuimfxStrategiesLogo />
+                < SuimfxStrategiesLogo appName={appName} />
               </div>
               <h1 className="font-headline text-[40px] leading-[1.1] md:text-5xl md:leading-[1.1] text-text-primary">
                 Simple Pricing
@@ -52,10 +54,10 @@ const StrategiesSection = () => {
                   Your Forex Business, Elevated
                 </p>
                 <p className="text-sm text-text-secondary mb-4">
-                   Suimfx empowers financial startups, trading educators, and fintech entrepreneurs to launch their own branded trading platforms instantly — with zero coding and maximum control.
+                  {appName} empowers financial startups, trading educators, and fintech entrepreneurs to launch their own branded trading platforms instantly — with zero coding and maximum control.
                 </p>
                 <p className="text-sm text-text-secondary">
-                  Join hundreds of businesses already powered by  Suimfx technology.
+                  Join hundreds of businesses already powered by {appName} technology.
                 </p>
               </div>
             </div>
@@ -65,7 +67,7 @@ const StrategiesSection = () => {
 
         <div className="mt-16 sm:mt-20">
           <div className="bg-black/40 rounded-lg p-6 max-w-2xl">
-            <h3 className="text-lg font-medium mb-4">Why  Suimfx</h3>
+            <h3 className="text-lg font-medium mb-4">Why {appName}</h3>
             <ul className="space-y-2 text-sm text-text-secondary">
               <li>• Real-time trading data and AI analytics</li>
               <li>• 1000x leverage in forex and gold</li>

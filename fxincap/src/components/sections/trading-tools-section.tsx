@@ -1,6 +1,8 @@
+import { fetchPlatformBranding } from "@/lib/platform-branding";
 import Image from "next/image";
 
-const TradingToolsSection = () => {
+const TradingToolsSection = async () => {
+  const { appName } = await fetchPlatformBranding();
   return (
     <section className="relative bg-gradient-to-b from-[#1a1a1a] to-black text-white">
       <div className="max-w-[1440px] mx-auto px-6 md:px-12 lg:px-20 py-16 lg:py-24">
@@ -20,7 +22,7 @@ const TradingToolsSection = () => {
                 Next-Gen Forex Trading Platform
               </span>
               <h2 className="font-headline text-[40px] text-white font-normal leading-tight mt-6">
-                Power your business with  Suimfx's all-in-one trading technology — built for performance, flexibility, and growth.
+                Power your business with {appName}'s all-in-one trading technology — built for performance, flexibility, and growth.
               </h2>
               <p className="font-body text-muted-foreground text-lg mt-6">
                 Trade forex, indices, crypto, gold, and commodities with lightning-fast execution and deep liquidity.

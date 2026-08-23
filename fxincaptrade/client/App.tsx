@@ -544,6 +544,8 @@ export default function App() {
 
       if (data.platformName) {
         localStorage.setItem("platform_name", data.platformName);
+        // Browser tab follows the admin-configured App Name too.
+        document.title = `${data.platformName} - Forex Trading Platform`;
         window.dispatchEvent(new CustomEvent("platform-name-updated"));
       }
     };

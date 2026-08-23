@@ -31,6 +31,7 @@ export default function Header() {
     const [showMore, setShowMore] = useState(false);
     const [showProfile, setShowProfile] = useState(false);
     const [openTopDropdown, setOpenTopDropdown] = useState<string | null>(null);
+    const [appName, setAppName] = useState(() => localStorage.getItem("platform_name") || "SuimFx");
     const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
     const topNavRef = useRef<HTMLElement | null>(null);
     const dropdownTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -61,6 +62,12 @@ export default function Header() {
     }, [theme]);
 
     const dropdownPanelRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        const handler = () => setAppName(localStorage.getItem("platform_name") || "SuimFx");
+        window.addEventListener("platform-name-updated", handler);
+        return () => window.removeEventListener("platform-name-updated", handler);
+    }, []);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -328,7 +335,7 @@ export default function Header() {
                 <div className="flex items-center justify-between px-4 py-4 border-b border-white/10">
                     <div>
                         <p className="text-[10px] uppercase tracking-widest text-gray-400 mb-0.5">Menu</p>
-                        <h2 className="text-lg font-bold text-white">FxIncap</h2>
+                        <h2 className="text-lg font-bold text-white">{appName}</h2>
                     </div>
                     <button
                         onClick={() => setShowMenu(false)}

@@ -38,11 +38,15 @@ async function resolveServerPrice(
   symbol: string,
   side: string,
   action: "OPEN" | "CLOSE"
-): Promise<{ price: number } | { error: string }> {
+): Promise<{ price: number } | { error: string; code: string }> {
   const quote = await getServerQuote(symbol);
 
+  // No quote, or a stale one, both mean the same thing to a trader: this symbol
+  // is not currently tradable. Tagged with a code so the client can show a
+  // "market closed" dialog instead of pattern-matching the message text.
   if (!quote) {
     return {
+      code: "MARKET_CLOSED",
       error:
         "Market price unavailable for this symbol. Trading is temporarily unavailable — please try again shortly.",
     };
@@ -50,6 +54,7 @@ async function resolveServerPrice(
 
   if (!isFresh(quote)) {
     return {
+      code: "MARKET_CLOSED",
       error: "Market price is stale. Trading is temporarily unavailable — please try again shortly.",
     };
   }
@@ -72,7 +77,7 @@ router.post("/open", verifyToken, async (req: AuthRequest, res: Response) => {
 
     const priced = await resolveServerPrice(String(symbol), String(side), "OPEN");
     if ("error" in priced) {
-      return res.status(503).json({ success: false, error: priced.error });
+      return res.status(503).json({ success: false, error: priced.error, code: priced.code, symbol });
     }
     const entryPrice = priced.price;
 
@@ -177,7 +182,7 @@ router.put("/:id/close", verifyToken, async (req: AuthRequest, res: Response) =>
     // not choose the price its own position settles at.
     const priced = await resolveServerPrice(String(trade.symbol), String(trade.side), "CLOSE");
     if ("error" in priced) {
-      return res.status(503).json({ success: false, error: priced.error });
+      return res.status(503).json({ success: false, error: priced.error, code: priced.code, symbol: trade.symbol });
     }
     const closePrice = priced.price;
 

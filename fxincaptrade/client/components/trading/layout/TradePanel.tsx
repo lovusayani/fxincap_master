@@ -161,8 +161,8 @@ export default function TradePanel({
             </div>
           )}
 
-          {/* Labelled Bid/Ask rather than Sell/Buy: a sell fills at the bid and a
-              buy fills at the ask, so the label names the price being taken. */}
+          {/* Labelled Sell/Buy for clarity; the price underneath is the one the
+              order actually fills at — the bid for a sell, the ask for a buy. */}
           <div className="mt-2 grid grid-cols-2 gap-2">
             <button
               type="button"
@@ -170,7 +170,7 @@ export default function TradePanel({
               disabled={submitting || !hasValidPrice || noFreeMargin || insufficientSell || (orderType === "Market" && slParsed != null && !slSellCheck.ok)}
               className="flex flex-col items-center rounded-full border border-white/25 bg-red-500/80 py-0.5 leading-tight text-white shadow-lg shadow-red-900/40 ring-1 ring-inset ring-white/20 backdrop-blur-md transition hover:bg-red-500 hover:shadow-red-800/50 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
             >
-              <span className="text-sm font-semibold drop-shadow-sm">{submitting ? "Placing..." : "Bid"}</span>
+              <span className="text-sm font-semibold drop-shadow-sm">{submitting ? "Placing..." : "Sell"}</span>
               {!submitting && isMarket && bid > 0 && (
                 <span className="text-[10px] tabular-nums opacity-95">{bid.toFixed(bid > 100 ? 2 : 5)}</span>
               )}
@@ -181,7 +181,7 @@ export default function TradePanel({
               disabled={submitting || !hasValidPrice || noFreeMargin || insufficientBuy || (orderType === "Market" && slParsed != null && !slBuyCheck.ok)}
               className="flex flex-col items-center rounded-full border border-white/25 bg-emerald-500/80 py-0.5 leading-tight text-white shadow-lg shadow-emerald-900/40 ring-1 ring-inset ring-white/20 backdrop-blur-md transition hover:bg-emerald-500 hover:shadow-emerald-800/50 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
             >
-              <span className="text-sm font-semibold drop-shadow-sm">{submitting ? "Placing..." : "Ask"}</span>
+              <span className="text-sm font-semibold drop-shadow-sm">{submitting ? "Placing..." : "Buy"}</span>
               {!submitting && isMarket && ask > 0 && (
                 <span className="text-[10px] tabular-nums opacity-95">{ask.toFixed(ask > 100 ? 2 : 5)}</span>
               )}

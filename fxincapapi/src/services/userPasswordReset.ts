@@ -74,21 +74,27 @@ export async function requestPasswordReset(email: string): Promise<{ emailDelive
   const resetLink = buildResetLink(email, resetCode);
 
   try {
+    // Branded shell + admin-editable login body copy, same as the other mails.
+    const { getEmailBranding, renderBrandedEmail, escapeEmailHtmlWithBreaks } = await import('../lib/emailBranding.js');
+    const branding = await getEmailBranding();
+
     await sendEmail({
       to: email,
       subject: 'Reset your password',
-      html: `
-        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#0b0f1a;color:#e2e8f0;border-radius:12px">
-          <h2 style="color:#38bdf8;margin:0 0 16px">Reset Your Password</h2>
-          <p>Hi ${firstName},</p>
-          <p>We received a request to reset your password. Use the code below, or click the button to continue.</p>
-          <p style="font-size:32px;font-weight:bold;letter-spacing:6px;color:#f8fafc;margin:20px 0">${resetCode}</p>
-          <p style="margin:20px 0">
-            <a href="${resetLink}" style="background:#0ea5e9;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">Reset Password</a>
+      html: renderBrandedEmail({
+        branding,
+        title: 'Reset Your Password',
+        accentColor: '#38bdf8',
+        bodyHtml: `
+          <p style="margin:0 0 12px">Hi ${firstName},</p>
+          <p style="margin:0 0 18px;color:#cbd5e1;line-height:1.6">${escapeEmailHtmlWithBreaks(branding.bodyLogin)}</p>
+          <p style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#f8fafc;margin:20px 0;text-align:center">${resetCode}</p>
+          <p style="margin:22px 0;text-align:center">
+            <a href="${resetLink}" style="background:#0ea5e9;color:#fff;padding:12px 32px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">Reset Password</a>
           </p>
           <p style="color:#94a3b8;font-size:13px">This code expires in ${RESET_CODE_EXPIRY_MINUTES} minutes. If you didn't request this, you can safely ignore this email.</p>
-        </div>
-      `,
+        `,
+      }),
     });
     return { emailDelivery: 'sent' };
   } catch (error) {

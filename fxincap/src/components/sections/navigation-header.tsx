@@ -3,16 +3,23 @@
 import * as React from "react";
 import Link from "next/link";
 import { Feather } from "lucide-react";
+import { useBranding } from "@/components/BrandProvider";
+import { TradeLink } from "@/components/TradeLink";
 
-const SuimfxLogo = () => (
-  <Link
-    href="/"
-    className="flex shrink-0 items-center gap-2"
-    aria-label=" Suimfx homepage"
-  >
-    <img src="/logo/logo_white.png" alt=" Suimfx" className="h-8 md:h-12 w-auto object-contain" />
-  </Link>
-);
+const SuimfxLogo = () => {
+  const { appName, logoDarkUrl, logoLightUrl } = useBranding();
+  // Header sits on black, so prefer the dark-background (light) logo.
+  const src = logoDarkUrl || logoLightUrl || "/logo/logo_white.png";
+  return (
+    <Link
+      href="/"
+      className="flex shrink-0 items-center gap-2"
+      aria-label={`${appName} homepage`}
+    >
+      <img src={src} alt={appName} className="h-8 md:h-12 w-auto object-contain" />
+    </Link>
+  );
+};
 
 const NavigationHeader = () => {
   return (
@@ -24,22 +31,18 @@ const NavigationHeader = () => {
         <SuimfxLogo />
 
         <div className="flex items-center justify-end gap-3">
-          <a
-            href="https://terminal.suimfx.com/login"
-            target="_blank"
-            rel="noopener noreferrer"
+          <TradeLink
+            path="/login"
             className="flex h-9 items-center justify-center whitespace-nowrap rounded-full border border-white bg-transparent px-6 text-base font-medium text-white transition-colors hover:bg-white hover:text-black"
           >
             Log in
-          </a>
-          <a
-            href="https://terminal.suimfx.com/register"
-            target="_blank"
-            rel="noopener noreferrer"
+          </TradeLink>
+          <TradeLink
+            path="/register"
             className="flex h-9 items-center justify-center whitespace-nowrap rounded-full bg-[#d4ff00] px-6 text-base font-medium text-black transition-colors hover:bg-[#c1ff00]"
           >
             Sign up
-          </a>
+          </TradeLink>
         </div>
       </div>
     </header>

@@ -1,5 +1,7 @@
 "use client";
 
+import { useBranding } from "@/components/BrandProvider";
+
 import React from "react";
 
 // Custom SVG icons for pixel-perfect replication
@@ -127,7 +129,7 @@ const companyLinks = [
   { name: "Support", href: "#" },
   { name: "ESG", href: "#" },
   { name: "Investor Index", href: "#" },
-  { name: " Suimfx Merch", href: "#" },
+  { name: "Merch", href: "#" },
 ];
 
 const legalLinks = [
@@ -138,6 +140,7 @@ const legalLinks = [
 ];
 
 export default function Footer() {
+  const { appName } = useBranding();
   return (
     <footer className="bg-black text-white pt-16 pb-12 font-body">
       <div className="max-w-[1280px] mx-auto px-6 md:px-12 lg:px-20">
@@ -162,7 +165,7 @@ export default function Footer() {
               <li>
                 <a
                   href="#"
-                  aria-label=" Suimfx on Twitter"
+                  aria-label={`${appName} on Twitter`}
                   className="text-white hover:opacity-75 transition-opacity"
                 >
                   <TwitterIcon />
@@ -171,7 +174,7 @@ export default function Footer() {
               <li>
                 <a
                   href="#"
-                  aria-label=" Suimfx on Instagram"
+                  aria-label={`${appName} on Instagram`}
                   className="text-white hover:opacity-75 transition-opacity"
                 >
                   <InstagramIcon />
@@ -180,7 +183,7 @@ export default function Footer() {
               <li>
                 <a
                   href="#"
-                  aria-label=" Suimfx on LinkedIn"
+                  aria-label={`${appName} on LinkedIn`}
                   className="text-white hover:opacity-75 transition-opacity"
                 >
                   <LinkedinIcon />
@@ -189,7 +192,7 @@ export default function Footer() {
               <li>
                 <a
                   href="#"
-                  aria-label=" Suimfx on TikTok"
+                  aria-label={`${appName} on TikTok`}
                   className="text-white hover:opacity-75 transition-opacity"
                 >
                   <TikTokIcon />
@@ -198,7 +201,7 @@ export default function Footer() {
               <li>
                 <a
                   href="#"
-                  aria-label=" Suimfx on Youtube"
+                  aria-label={`${appName} on Youtube`}
                   className="text-white hover:opacity-75 transition-opacity"
                 >
                   <YoutubeIcon />
@@ -264,11 +267,10 @@ export default function Footer() {
           </div>
           <div className="text-xs leading-[1.4] space-y-4 md:col-span-2 lg:col-span-1">
             <p className="text-sm font-medium mb-4">
-              © 2025 Suimfx. All Rights Reserved.
+              © 2025 {appName}. All Rights Reserved.
             </p>
             <p>
-              {" "}
-              Suimfx is a UK-based fintech company providing forex trading
+              {appName} is a UK-based fintech company providing forex trading
               platforms, brokerage solutions, and white-label services globally.
             </p>
           </div>
@@ -279,15 +281,14 @@ export default function Footer() {
           aria-hidden="true"
         >
           <p className="font-headline font-medium text-[200px] leading-[0.7]">
-            {" "}
-            Suimfx
+            {appName}
           </p>
         </div>
 
         <div className="mt-8 flex flex-col md:flex-row justify-between items-center text-xs gap-4">
-          <p>© 2025 Suimfx. All rights reserved.</p>
+          <p>© 2025 {appName}. All rights reserved.</p>
           <a
-            href="https://wa.me/919238822465?text=Hello,%20I%20would%20like%20to%20know%20more%20about%20 Suimfx%20trading%20platform"
+            href={`https://wa.me/918240765589?text=Hello,%20I%20would%20like%20to%20know%20more%20about%20${encodeURIComponent(appName)}%20trading%20platform`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-white hover:text-[#d4ff00] transition-colors font-medium"

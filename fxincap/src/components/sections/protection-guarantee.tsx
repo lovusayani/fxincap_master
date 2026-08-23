@@ -1,3 +1,4 @@
+import { fetchPlatformBranding } from "@/lib/platform-branding";
 import Image from 'next/image';
 
 const features = [
@@ -23,13 +24,14 @@ const features = [
   },
 ];
 
-const ProtectionGuarantee = () => {
+const ProtectionGuarantee = async () => {
+  const { appName } = await fetchPlatformBranding();
   return (
     <section className="bg-[#1a1612] text-white py-14 md:py-16 lg:py-24">
       <div className="mx-auto max-w-[1408px] px-6 md:px-12 lg:px-16">
         <div className="text-center">
           <h2 className="font-headline text-[48px] leading-[1.1] text-white">
-             Suimfx Protection
+            {appName} Protection
           </h2>
           <div className="mt-8">
             <p className="text-lg text-white/80">

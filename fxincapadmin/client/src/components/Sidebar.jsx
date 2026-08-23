@@ -161,12 +161,12 @@ const menus = [
     label: 'Trade Master', icon: 'monitoring', children: [
       { label: 'Trade History', path: '/trade-setting' },
       { label: 'Trade Settings', path: '/forex-charges' },
-      { label: 'Hero Banners', path: '/hero-banners' },
     ]
   },
   {
     label: 'Promo Offers', icon: 'trending_up', children: [
       { label: 'Offers', path: '/market/offers' },
+      { label: 'Hero Banners', path: '/hero-banners' },
     ]
   },
   {
@@ -179,9 +179,9 @@ const menus = [
   },
   {
     label: 'Reports', icon: 'analytics', children: [
-      { label: 'Transactions' },
-      { label: 'Balance Sheet' },
-      { label: 'Report2' },
+      { label: 'Transactions', path: '/reports/transactions' },
+      { label: 'Balance Sheet', path: '/reports/balance-sheet' },
+      { label: 'Trading Report', path: '/reports/trading' },
     ]
   },
   {
@@ -202,13 +202,10 @@ const menus = [
   },
   {
     label: 'Settings', icon: 'settings', children: [
-      { label: 'User Settings', path: '/user-settings' },
-      { label: 'Control Settings' },
-      { label: 'Payment Settings' },
-      { label: 'Terminal Settings' },
       { label: 'Server Settings', path: '/server-settings' },
-      { label: 'Notif Settings' },
+      { label: 'Email Setting', path: '/email-setting' },
       { label: 'Miscellaneous', path: '/miscellaneous-settings' },
+      { label: 'Page Setting', path: '/page-setting' },
     ]
   },
 ]
@@ -292,6 +289,8 @@ export const Sidebar = ({ expanded, onToggle }) => {
           const name = json.data.platformName
           localStorage.setItem('platform_name', name)
           setAppName(name)
+          // Browser tab follows the admin-configured App Name too.
+          document.title = `${name} Admin`
         }
       })
 
