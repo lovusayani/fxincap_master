@@ -1653,8 +1653,8 @@ router.post("/kyc/submit", verifyToken, async (req: AuthRequest, res) => {
     );
     const items = Array.isArray(docsResults) ? docsResults : [];
     const has = (t: string) => items.some((d: any) => d.document_type === t && !!d.document_url);
-    // Required: PAN, ID Proof, Address Proof (Passport is optional)
-    const required = ["panCard", "idProof", "addressProof"];
+    // Required: Aadhaar, PAN, Passport, Bank Passbook
+    const required = ["aadhaar", "panCard", "passport", "bankPassbook"];
     const missing = required.filter((t) => !has(t));
     if (missing.length > 0) {
       return res.status(400).json({ success: false, error: `Missing documents: ${missing.join(", ")}` });

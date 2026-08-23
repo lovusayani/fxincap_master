@@ -143,12 +143,38 @@ export async function fetchKycDocumentById(id: string): Promise<KycDocument | nu
   };
 }
 
+const REQUIRED_KYC_DOCUMENT_TYPES = ["aadhaar", "panCard", "passport", "bankPassbook"];
+
+async function recomputeUserKycStatus(userId: string) {
+  const rows: any = await query(
+    "SELECT document_type, status FROM kyc_documents WHERE user_id = ?",
+    [userId]
+  );
+  const byType = new Map((Array.isArray(rows) ? rows : []).map((r: any) => [r.document_type, r.status]));
+
+  let overall: "pending" | "approved" | "rejected" = "pending";
+  if (REQUIRED_KYC_DOCUMENT_TYPES.some((t) => byType.get(t) === "rejected")) {
+    overall = "rejected";
+  } else if (REQUIRED_KYC_DOCUMENT_TYPES.every((t) => byType.get(t) === "approved")) {
+    overall = "approved";
+  }
+
+  await query("UPDATE user_profiles SET kyc_status = ? WHERE user_id = ?", [overall, userId]);
+}
+
 export async function updateKycStatus(id: string, status: "approved" | "rejected") {
   await ensureKycDocumentsTable();
+  const rows: any = await query("SELECT user_id FROM kyc_documents WHERE id = ? LIMIT 1", [id]);
+  const userId = Array.isArray(rows) && rows.length > 0 ? rows[0].user_id : null;
+  if (!userId) return false;
+
   const result: any = await query(
-    "UPDATE kyc_documents SET status = ?, updated_at = NOW() WHERE id = ?",
+    "UPDATE kyc_documents SET status = ?, updated_at = NOW() WHERE id = ? RETURNING id",
     [status, id]
   );
-  return (result?.affectedRows || 0) > 0;
+  const ok = Array.isArray(result) && result.length > 0;
+
+  await recomputeUserKycStatus(userId);
+  return ok;
 }
 

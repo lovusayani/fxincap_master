@@ -3,7 +3,11 @@
     "allow": [
       "Bash(npx tsc *)",
       "Bash(powershell -Command \"Get-ChildItem -Path 'f:\\\\app\\\\fxfx\\\\fxincapadmin\\\\client\\\\src\\\\pages\\\\' -File | Select-Object Name\")",
-      "Bash(powershell -Command \"Get-ChildItem -Path 'f:\\\\app\\\\fxfx\\\\fxincapadmin\\\\client\\\\src\\\\components\\\\' -File | Select-Object Name\")"
+      "Bash(powershell -Command \"Get-ChildItem -Path 'f:\\\\app\\\\fxfx\\\\fxincapadmin\\\\client\\\\src\\\\components\\\\' -File | Select-Object Name\")",
+      "Bash(ssh kaka:*)",
+      "Bash(ssh *)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh api:*)"
     ]
   }
 }

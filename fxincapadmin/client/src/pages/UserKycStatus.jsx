@@ -13,6 +13,13 @@ import {
 import { useReactTable, getCoreRowModel, getPaginationRowModel, getSortedRowModel, flexRender } from '@tanstack/react-table'
 import { useAuth } from '../context/AuthContext'
 
+const DOCUMENT_TYPE_LABELS = {
+  aadhaar: 'Aadhaar Card',
+  panCard: 'PAN Card',
+  passport: 'Passport',
+  bankPassbook: 'Bank Passbook',
+}
+
 const formatDate = (value) => {
   if (!value) return 'N/A'
   const d = new Date(value)
@@ -35,7 +42,7 @@ const Modal = ({ doc, onClose, onApprove, onReject, fileUrl }) => {
         <div className="grid gap-4 px-4 py-4 md:grid-cols-2">
           <div className="space-y-2 text-sm text-slate-200">
             <div className="flex justify-between"><span className="text-slate-400">User:</span><span>{doc.userName || doc.userEmail || `#${doc.userId}`}</span></div>
-            <div className="flex justify-between"><span className="text-slate-400">Document:</span><span>{doc.documentType || 'N/A'}</span></div>
+            <div className="flex justify-between"><span className="text-slate-400">Document:</span><span>{DOCUMENT_TYPE_LABELS[doc.documentType] || doc.documentType || 'N/A'}</span></div>
             <div className="flex justify-between"><span className="text-slate-400">Status:</span><span className={`rounded-full px-3 py-1 text-xs capitalize ${doc.status === 'pending' ? 'bg-yellow-900/40 text-yellow-200' : doc.status === 'approved' ? 'bg-emerald-900/40 text-emerald-200' : 'bg-red-900/40 text-red-200'}`}>{doc.status}</span></div>
             <div className="flex justify-between"><span className="text-slate-400">Submitted:</span><span>{formatDate(doc.createdAt)}</span></div>
             {doc.notes && <div className="text-slate-300">Notes: {doc.notes}</div>}
@@ -148,7 +155,7 @@ export const UserKycStatus = () => {
     {
       header: 'Document',
       accessorKey: 'documentType',
-      cell: info => info.getValue() || '—',
+      cell: info => DOCUMENT_TYPE_LABELS[info.getValue()] || info.getValue() || '—',
     },
     {
       header: 'Status',
