@@ -2922,7 +2922,9 @@ router.get("/withdrawal-fees", verifyToken, async (_req: AuthRequest, res: Respo
   }
 });
 
-router.put("/withdrawal-fees/:method/:network?", verifyToken, async (req: AuthRequest, res: Response) => {
+// Two explicit paths rather than an optional ":network?" segment: Express 5 /
+// path-to-regexp v8 dropped optional params and throws at route-registration.
+const saveWithdrawalFee = async (req: AuthRequest, res: Response) => {
   try {
     const { saveFeeRule, WITHDRAWAL_METHODS, USDT_NETWORKS } = await import("../lib/wallet.js");
     const method = String(req.params.method || "").toLowerCase();
@@ -2944,7 +2946,10 @@ router.put("/withdrawal-fees/:method/:network?", verifyToken, async (req: AuthRe
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
-});
+};
+
+router.put("/withdrawal-fees/:method", verifyToken, saveWithdrawalFee);
+router.put("/withdrawal-fees/:method/:network", verifyToken, saveWithdrawalFee);
 
 /**
  * Withdrawal report: every withdrawal with its method, fee and net payout.
