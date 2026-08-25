@@ -92,7 +92,7 @@ router.get("/clients", verifyToken, async (req: AuthRequest, res: Response) => {
       `SELECT c.id, c.client_user_id, c.status, c.lifetime_volume, c.lifetime_commission, c.created_at,
               u.email, u.first_name, u.last_name
          FROM ib_clients c
-         LEFT JOIN users u ON u.id = c.client_user_id
+         LEFT JOIN users u ON u.id::text = c.client_user_id
         WHERE c.ib_id = $1
         ORDER BY c.created_at DESC`,
       [partner.id]
@@ -111,7 +111,7 @@ router.get("/clients/:clientId", verifyToken, async (req: AuthRequest, res: Resp
     const rows = (await query(
       `SELECT c.*, u.email, u.first_name, u.last_name
          FROM ib_clients c
-         LEFT JOIN users u ON u.id = c.client_user_id
+         LEFT JOIN users u ON u.id::text = c.client_user_id
         WHERE c.id = $1 AND c.ib_id = $2
         LIMIT 1`,
       [req.params.clientId, partner.id]
@@ -134,7 +134,7 @@ router.get("/commissions", verifyToken, async (req: AuthRequest, res: Response) 
       `SELECT m.id, m.trade_id, m.symbol, m.volume, m.rate, m.model, m.amount, m.status,
               m.matures_at, m.paid_at, m.created_at, u.email AS client_email
          FROM ib_commissions m
-         LEFT JOIN users u ON u.id = m.client_user_id
+         LEFT JOIN users u ON u.id::text = m.client_user_id
         WHERE m.ib_id = $1
         ORDER BY m.created_at DESC
         LIMIT 500`,

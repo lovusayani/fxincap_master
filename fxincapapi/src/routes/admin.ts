@@ -351,8 +351,27 @@ router.put("/funds/:requestId/reject", verifyToken, async (req: AuthRequest, res
 
     let result;
     if (fundData.type === "withdrawal") {
-      // For withdrawals, credit the balance back
-      result = await rejectWithdrawalAndCredit(requestId);
+      // Where the refund goes depends on where the money was taken from.
+      // Wallet-era withdrawals have a `withdrawal_details` row and were debited
+      // from the withdrawal wallet; legacy ones were debited from the trading
+      // account. Refunding to the wrong place would either strand the funds or
+      // credit a trading account that never paid.
+      const { ensureWalletTables, refundWithdrawalToWallet } = await import("../lib/wallet.js");
+      await ensureWalletTables();
+      const detail = await query(
+        `SELECT fund_request_id FROM withdrawal_details WHERE fund_request_id = ? LIMIT 1`,
+        [requestId]
+      );
+
+      if (detail.length > 0) {
+        const refund = await refundWithdrawalToWallet(requestId);
+        if (!refund.success) {
+          return res.status(400).json({ success: false, error: refund.error || "Refund failed" });
+        }
+        result = { success: true } as any;
+      } else {
+        result = await rejectWithdrawalAndCredit(requestId);
+      }
     } else {
       // For deposits, just update status
       const ok = await updateFundRequestStatus(requestId, "rejected");
@@ -2889,6 +2908,149 @@ router.put("/ib/settings", verifyToken, async (req: AuthRequest, res: Response) 
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// Withdrawal charges + withdrawal reporting
+// ─────────────────────────────────────────────────────────────
+
+/** Per-method withdrawal charge rules (USDT / Bank). */
+router.get("/withdrawal-fees", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const { getFeeRules } = await import("../lib/wallet.js");
+    res.json({ success: true, data: await getFeeRules() });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/withdrawal-fees/:method", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { saveFeeRule, WITHDRAWAL_METHODS } = await import("../lib/wallet.js");
+    const method = String(req.params.method || "").toLowerCase();
+    if (!(WITHDRAWAL_METHODS as string[]).includes(method)) {
+      return res.status(400).json({ success: false, error: "Unknown withdrawal method" });
+    }
+    const saved = await saveFeeRule(method as any, req.body || {});
+    res.json({ success: true, message: "Charges saved", data: saved });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Withdrawal report: every withdrawal with its method, fee and net payout.
+ *
+ * Fees live in `withdrawal_details` rather than on `fund_requests` because the
+ * application role cannot ALTER tables owned by `doadmin`.
+ */
+router.get("/reports/withdrawals", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { ensureWalletTables } = await import("../lib/wallet.js");
+    await ensureWalletTables();
+
+    const status = String(req.query.status || "").trim();
+    const method = String(req.query.method || "").trim();
+    const params: any[] = [];
+    const clauses: string[] = ["f.type = 'withdrawal'"];
+    if (status) { params.push(status); clauses.push(`f.status = $${params.length}`); }
+    if (method) { params.push(method); clauses.push(`d.method = $${params.length}`); }
+
+    const rows = await query(
+      `SELECT f.id, f.amount, f.status, f.reference_number, f.created_at, f.completed_at,
+              d.method, d.fee_amount, d.net_amount, d.fee_type, d.fee_value,
+              d.usdt_address, d.usdt_network, d.bank_name, d.bank_account_name,
+              d.bank_account_number, d.bank_ifsc, d.bank_swift,
+              u.email, u.first_name, u.last_name
+         FROM fund_requests f
+         LEFT JOIN withdrawal_details d ON d.fund_request_id = f.id::text
+         LEFT JOIN users u ON u.id = f.user_id
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY f.created_at DESC
+        LIMIT 500`,
+      params
+    );
+
+    const [totals] = (await query(
+      `SELECT COALESCE(SUM(f.amount), 0) AS gross,
+              COALESCE(SUM(d.fee_amount), 0) AS fees,
+              COALESCE(SUM(d.net_amount), 0) AS net,
+              COUNT(*) AS count,
+              COALESCE(SUM(CASE WHEN f.status IN ('pending','processing') THEN f.amount ELSE 0 END), 0) AS in_process
+         FROM fund_requests f
+         LEFT JOIN withdrawal_details d ON d.fund_request_id = f.id::text
+        WHERE f.type = 'withdrawal'`
+    )) as any[];
+
+    const byMethod = await query(
+      `SELECT COALESCE(d.method, f.method, 'unknown') AS method,
+              COUNT(*) AS count,
+              COALESCE(SUM(f.amount), 0) AS gross,
+              COALESCE(SUM(d.fee_amount), 0) AS fees
+         FROM fund_requests f
+         LEFT JOIN withdrawal_details d ON d.fund_request_id = f.id::text
+        WHERE f.type = 'withdrawal'
+        GROUP BY 1 ORDER BY 1`
+    );
+
+    res.json({
+      success: true,
+      data: {
+        rows,
+        totals: {
+          gross: Number(totals?.gross || 0),
+          fees: Number(totals?.fees || 0),
+          net: Number(totals?.net || 0),
+          count: Number(totals?.count || 0),
+          inProcess: Number(totals?.in_process || 0),
+        },
+        byMethod,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/** Deposit report, mirroring the withdrawal report for the Transactions menu. */
+router.get("/reports/deposits", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const status = String(req.query.status || "").trim();
+    const params: any[] = [];
+    const clauses: string[] = ["f.type = 'deposit'"];
+    if (status) { params.push(status); clauses.push(`f.status = $${params.length}`); }
+
+    const rows = await query(
+      `SELECT f.id, f.amount, f.method, f.status, f.reference_number, f.created_at, f.completed_at,
+              a.account_number, u.email, u.first_name, u.last_name
+         FROM fund_requests f
+         LEFT JOIN user_accounts a ON a.id = f.account_id
+         LEFT JOIN users u ON u.id = f.user_id
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY f.created_at DESC
+        LIMIT 500`,
+      params
+    );
+    const [totals] = (await query(
+      `SELECT COALESCE(SUM(amount), 0) AS gross, COUNT(*) AS count,
+              COALESCE(SUM(CASE WHEN status IN ('pending','processing') THEN amount ELSE 0 END), 0) AS in_process
+         FROM fund_requests WHERE type = 'deposit'`
+    )) as any[];
+
+    res.json({
+      success: true,
+      data: {
+        rows,
+        totals: {
+          gross: Number(totals?.gross || 0),
+          count: Number(totals?.count || 0),
+          inProcess: Number(totals?.in_process || 0),
+        },
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 /** Commission ledger across all partners, for the admin Referrals view. */
 router.get("/ib/commissions", verifyToken, async (req: AuthRequest, res: Response) => {
   try {
@@ -2908,7 +3070,7 @@ router.get("/ib/commissions", verifyToken, async (req: AuthRequest, res: Respons
               u.email AS client_email
          FROM ib_commissions m
          LEFT JOIN ib_partners p ON p.id = m.ib_id
-         LEFT JOIN users u ON u.id = m.client_user_id
+         LEFT JOIN users u ON u.id::text = m.client_user_id
          ${where}
         ORDER BY m.created_at DESC
         LIMIT 500`,
@@ -2928,7 +3090,7 @@ router.get("/ib/partners/:id/clients", verifyToken, async (req: AuthRequest, res
       `SELECT c.id, c.client_user_id, c.status, c.lifetime_volume, c.lifetime_commission, c.created_at,
               u.email, u.first_name, u.last_name
          FROM ib_clients c
-         LEFT JOIN users u ON u.id = c.client_user_id
+         LEFT JOIN users u ON u.id::text = c.client_user_id
         WHERE c.ib_id = $1
         ORDER BY c.created_at DESC`,
       [req.params.id]
