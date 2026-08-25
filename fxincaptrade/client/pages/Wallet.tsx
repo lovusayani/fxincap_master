@@ -71,7 +71,10 @@ type Summary = {
 const money = (n: unknown) =>
   `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-const token = () => localStorage.getItem("token") || "";
+// The whole app stores the JWT under "auth_token" (see Login.tsx); reading
+// "token" here returned an empty string, so every wallet request went out with
+// an empty Bearer header and the API rejected it with "No token provided".
+const token = () => localStorage.getItem("auth_token") || "";
 const authH = () => ({ "Content-Type": "application/json", Authorization: `Bearer ${token()}` });
 
 function StatusPill({ status }: { status: string }) {
