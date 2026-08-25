@@ -30,6 +30,9 @@ import { TradersList } from './pages/TradersList'
 import { SubAgentsList } from './pages/SubAgentsList'
 import { AccountTypes } from './pages/AccountTypes'
 import { IBProgram } from './pages/IBProgram'
+import { WithdrawalCharges } from './pages/WithdrawalCharges'
+import { WithdrawalsReport } from './pages/WithdrawalsReport'
+import { DepositsReport } from './pages/DepositsReport'
 import { MamPam } from './pages/MamPam'
 import { PageSetting } from './pages/PageSetting'
 import { EmailSettings } from './pages/EmailSettings'
@@ -87,6 +90,9 @@ function App() {
             <Route path="reports/balance-sheet" element={<BalanceSheetReport />} />
             <Route path="reports/trading" element={<TradingReport />} />
             <Route path="ib-program" element={<IBProgram />} />
+            <Route path="deposits" element={<DepositsReport />} />
+            <Route path="withdrawals" element={<WithdrawalsReport />} />
+            <Route path="withdrawal-charges" element={<WithdrawalCharges />} />
             <Route path="mam-pam" element={<MamPam />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

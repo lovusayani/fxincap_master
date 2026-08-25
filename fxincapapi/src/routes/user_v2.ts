@@ -1818,6 +1818,11 @@ router.get("/ib/status", verifyToken, async (req: AuthRequest, res: Response) =>
   try {
     const userId = req.user?.id;
 
+    const { ensureIBTables, getIBSettings, matureCommissions, resolveCommissionRate } = await import(
+      "../lib/ib.js"
+    );
+    await ensureIBTables();
+
     // Check if already an active IB partner
     const [partner] = await query(
       `SELECT p.*, l.name AS level_name FROM ib_partners p
@@ -1826,14 +1831,37 @@ router.get("/ib/status", verifyToken, async (req: AuthRequest, res: Response) =>
       [userId]
     );
     if (partner) {
+      await matureCommissions();
+      const settings = await getIBSettings();
+      const rate = await resolveCommissionRate(partner);
+
+      // Read the ledger rather than the cached columns so the trader sees the
+      // same figures the admin dashboard reports.
+      const [agg] = await query(
+        `SELECT COALESCE(SUM(CASE WHEN status IN ('matured','paid') THEN amount ELSE 0 END), 0) AS earned,
+                COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) AS pending,
+                COALESCE(SUM(CASE WHEN status = 'matured' THEN amount ELSE 0 END), 0) AS available,
+                COALESCE(SUM(volume), 0) AS volume
+           FROM ib_commissions WHERE ib_id = ?`,
+        [partner.id]
+      );
+      const [clients] = await query(`SELECT COUNT(*) AS total FROM ib_clients WHERE ib_id = ?`, [partner.id]);
+
+      const base = (settings.referral_base_url || process.env.PUBLIC_SITE_URL || "").replace(/\/$/, "");
+
       return res.json({
         success: true,
         data: {
           status: "approved",
           ib_code: partner.ib_code,
-          referrals: partner.referrals || 0,
-          commission_earned: partner.commission_earned || 0,
-          commission_pending: partner.commission_pending || 0,
+          referral_link: base ? `${base}/register?ref=${encodeURIComponent(partner.ib_code)}` : null,
+          referrals: Number(clients?.total || 0),
+          commission_earned: Number(agg?.earned || 0),
+          commission_pending: Number(agg?.pending || 0),
+          commission_available: Number(agg?.available || 0),
+          total_volume: Number(agg?.volume || 0),
+          commission_rate: rate,
+          commission_model: settings.commission_model,
           level_name: partner.level_name || null,
         }
       });
@@ -1860,6 +1888,20 @@ router.post("/ib/apply", verifyToken, async (req: AuthRequest, res: Response) =>
     const userId = req.user?.id;
     const { experience, phone } = req.body;
 
+    const { ensureIBTables, getIBSettings } = await import("../lib/ib.js");
+    await ensureIBTables();
+    const settings = await getIBSettings();
+
+    if (!settings.ib_registration_open) {
+      return res.status(403).json({ success: false, error: "IB registration is currently closed" });
+    }
+
+    // Already a partner - nothing to apply for.
+    const [alreadyPartner] = await query(`SELECT ib_code FROM ib_partners WHERE user_id = ? LIMIT 1`, [userId]);
+    if (alreadyPartner) {
+      return res.status(400).json({ success: false, error: "You are already an IB partner" });
+    }
+
     // Block duplicate pending applications
     const [existing] = await query(
       `SELECT id FROM ib_applications WHERE user_id = ? AND status = 'pending'`,
@@ -1870,11 +1912,40 @@ router.post("/ib/apply", verifyToken, async (req: AuthRequest, res: Response) =>
     const [user] = await query(`SELECT email, first_name, last_name FROM users WHERE id = ?`, [userId]);
     const fullName = `${user?.first_name || ""} ${user?.last_name || ""}`.trim() || user?.email || "";
 
+    const applicationId = uuidv4();
+    const autoApprove = settings.auto_approve === true;
+
     await query(
       `INSERT INTO ib_applications (id, user_id, name, email, phone, experience, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-      [uuidv4(), userId, fullName, user?.email || "", phone || "", experience || ""]
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [applicationId, userId, fullName, user?.email || "", phone || "", experience || "", autoApprove ? "approved" : "pending"]
     );
+
+    // auto_approve previously had no effect anywhere; honour it here by minting
+    // the partner (and their referral code) immediately.
+    if (autoApprove) {
+      let ibCode = "";
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const candidate = "IB" + Math.random().toString(36).toUpperCase().slice(2, 8).padEnd(6, "0");
+        const clash = await query(`SELECT 1 FROM ib_partners WHERE ib_code = ? LIMIT 1`, [candidate]);
+        if (clash.length === 0) {
+          ibCode = candidate;
+          break;
+        }
+      }
+      if (ibCode) {
+        await query(
+          `INSERT INTO ib_partners (id, user_id, name, email, phone, ib_code, status)
+           VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+          [uuidv4(), userId, fullName, user?.email || "", phone || "", ibCode]
+        );
+        return res.json({
+          success: true,
+          message: "IB application approved",
+          data: { status: "approved", ib_code: ibCode },
+        });
+      }
+    }
 
     res.json({ success: true, message: "IB application submitted successfully" });
   } catch (error: any) {

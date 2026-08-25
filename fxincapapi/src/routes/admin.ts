@@ -49,6 +49,12 @@ import {
   setEmailProvider,
 } from "../lib/smtp-settings.js";
 import { sendEmail } from "../lib/mailer.js";
+import {
+  ensureIBTables,
+  getIBSettings,
+  matureCommissions,
+  syncPartnerCounters,
+} from "../lib/ib.js";
 
 const __adminFilename = fileURLToPath(import.meta.url);
 const __adminDirname = path.dirname(__adminFilename);
@@ -345,8 +351,27 @@ router.put("/funds/:requestId/reject", verifyToken, async (req: AuthRequest, res
 
     let result;
     if (fundData.type === "withdrawal") {
-      // For withdrawals, credit the balance back
-      result = await rejectWithdrawalAndCredit(requestId);
+      // Where the refund goes depends on where the money was taken from.
+      // Wallet-era withdrawals have a `withdrawal_details` row and were debited
+      // from the withdrawal wallet; legacy ones were debited from the trading
+      // account. Refunding to the wrong place would either strand the funds or
+      // credit a trading account that never paid.
+      const { ensureWalletTables, refundWithdrawalToWallet } = await import("../lib/wallet.js");
+      await ensureWalletTables();
+      const detail = await query(
+        `SELECT fund_request_id FROM withdrawal_details WHERE fund_request_id = ? LIMIT 1`,
+        [requestId]
+      );
+
+      if (detail.length > 0) {
+        const refund = await refundWithdrawalToWallet(requestId);
+        if (!refund.success) {
+          return res.status(400).json({ success: false, error: refund.error || "Refund failed" });
+        }
+        result = { success: true } as any;
+      } else {
+        result = await rejectWithdrawalAndCredit(requestId);
+      }
     } else {
       // For deposits, just update status
       const ok = await updateFundRequestStatus(requestId, "rejected");
@@ -2679,76 +2704,48 @@ router.delete("/account-types/:id", verifyToken, async (req: AuthRequest, res: R
 // IB Program routes
 // ─────────────────────────────────────────────────────────────
 
-// Ensure IB tables exist
-async function ensureIBTables() {
-  await query(`
-    CREATE TABLE IF NOT EXISTS ib_partners (
-      id VARCHAR(36) PRIMARY KEY,
-      user_id VARCHAR(36) NOT NULL,
-      name VARCHAR(255),
-      email VARCHAR(255),
-      phone VARCHAR(50),
-      ib_code VARCHAR(50) UNIQUE,
-      level_id VARCHAR(36),
-      status VARCHAR(20) DEFAULT 'active',
-      commission_earned DECIMAL(18,2) DEFAULT 0,
-      commission_pending DECIMAL(18,2) DEFAULT 0,
-      referrals INT DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await query(`
-    CREATE TABLE IF NOT EXISTS ib_applications (
-      id VARCHAR(36) PRIMARY KEY,
-      user_id VARCHAR(36),
-      name VARCHAR(255),
-      email VARCHAR(255),
-      phone VARCHAR(50),
-      experience TEXT,
-      status VARCHAR(20) DEFAULT 'pending',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await query(`
-    CREATE TABLE IF NOT EXISTS ib_levels (
-      id VARCHAR(36) PRIMARY KEY,
-      name VARCHAR(100) NOT NULL,
-      commission_rate DECIMAL(5,2) NOT NULL,
-      min_referrals INT DEFAULT 0,
-      description TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await query(`
-    CREATE TABLE IF NOT EXISTS ib_settings (
-      id INT PRIMARY KEY DEFAULT 1,
-      min_deposit DECIMAL(18,2) DEFAULT 0,
-      commission_delay_days INT DEFAULT 0,
-      auto_approve BOOLEAN DEFAULT false,
-      ib_registration_open BOOLEAN DEFAULT true
-    )
-  `);
-  // Ensure default settings row exists
-  await query(`INSERT INTO ib_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
-}
+// Schema lives in lib/ib.ts alongside the referral and commission logic so the
+// admin routes, the partner routes and the registration hook cannot drift apart.
 
 router.get("/ib/stats", verifyToken, async (_req: AuthRequest, res: Response) => {
   try {
     await ensureIBTables();
-    const [ibRow]   = await query(`SELECT COUNT(*) AS total, SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending FROM ib_partners`);
-    const [refRow]  = await query(`SELECT COALESCE(SUM(referrals),0) AS total FROM ib_partners`);
-    const [comRow]  = await query(`SELECT COALESCE(SUM(commission_earned),0) AS total, COALESCE(SUM(CASE WHEN DATE(created_at)=CURRENT_DATE THEN commission_earned ELSE 0 END),0) AS today FROM ib_partners`);
-    const [penRow]  = await query(`SELECT COALESCE(SUM(commission_pending),0) AS total, COUNT(*) AS requests FROM ib_partners WHERE commission_pending > 0`);
+    await matureCommissions();
+
+    // Partner counts come from ib_partners, but every money figure is computed
+    // from the ib_commissions ledger rather than the denormalised counters, so
+    // the dashboard cannot report a stale cache as fact.
+    const [ibRow] = await query(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending
+         FROM ib_partners`
+    );
+    const [refRow] = await query(`SELECT COUNT(*) AS total FROM ib_clients`);
+    const [comRow] = await query(
+      `SELECT COALESCE(SUM(amount), 0) AS total,
+              COALESCE(SUM(CASE WHEN created_at::date = CURRENT_DATE THEN amount ELSE 0 END), 0) AS today,
+              COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) AS pending,
+              COALESCE(SUM(CASE WHEN status = 'matured' THEN amount ELSE 0 END), 0) AS payable,
+              COALESCE(SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END), 0) AS paid
+         FROM ib_commissions`
+    );
+    const [payRow] = await query(
+      `SELECT COUNT(DISTINCT ib_id) AS requests FROM ib_commissions WHERE status = 'matured'`
+    );
+
     res.json({
       success: true,
       data: {
-        totalIBs:             Number(ibRow?.total  || 0),
-        pendingIBs:           Number(ibRow?.pending || 0),
-        totalReferrals:       Number(refRow?.total  || 0),
-        totalCommissions:     Number(comRow?.total  || 0),
-        todayCommissions:     Number(comRow?.today  || 0),
-        pendingWithdrawals:   Number(penRow?.total  || 0),
-        withdrawalRequests:   Number(penRow?.requests || 0),
+        totalIBs:           Number(ibRow?.total || 0),
+        pendingIBs:         Number(ibRow?.pending || 0),
+        totalReferrals:     Number(refRow?.total || 0),
+        totalCommissions:   Number(comRow?.total || 0),
+        todayCommissions:   Number(comRow?.today || 0),
+        pendingCommissions: Number(comRow?.pending || 0),
+        paidCommissions:    Number(comRow?.paid || 0),
+        // "Pending withdrawals" is matured commission awaiting payout.
+        pendingWithdrawals: Number(comRow?.payable || 0),
+        withdrawalRequests: Number(payRow?.requests || 0),
       }
     });
   } catch (error: any) {
@@ -2785,13 +2782,38 @@ router.post("/ib/applications/:id/approve", verifyToken, async (req: AuthRequest
 
     await query(`UPDATE ib_applications SET status = 'approved' WHERE id = ?`, [id]);
 
-    // Create IB partner record
-    const ibCode = "IB" + Math.random().toString(36).toUpperCase().slice(2, 8);
+    // Approving twice must not mint a second partner for the same user.
+    const existing = await query(`SELECT id, ib_code FROM ib_partners WHERE user_id = ? LIMIT 1`, [
+      app.user_id || "",
+    ]);
+    if (existing.length > 0) {
+      return res.json({
+        success: true,
+        message: "Application approved",
+        data: { ibCode: existing[0].ib_code, alreadyPartner: true },
+      });
+    }
+
+    // ib_code is UNIQUE and doubles as the public referral code, so a collision
+    // would fail the insert. Retry a few times before giving up.
+    let ibCode = "";
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const candidate = "IB" + Math.random().toString(36).toUpperCase().slice(2, 8).padEnd(6, "0");
+      const clash = await query(`SELECT 1 FROM ib_partners WHERE ib_code = ? LIMIT 1`, [candidate]);
+      if (clash.length === 0) {
+        ibCode = candidate;
+        break;
+      }
+    }
+    if (!ibCode) {
+      return res.status(500).json({ success: false, error: "Could not allocate a unique IB code" });
+    }
+
     await query(
       `INSERT INTO ib_partners (id, user_id, name, email, phone, ib_code, status) VALUES (?, ?, ?, ?, ?, ?, 'active')`,
       [uuidv4(), app.user_id || "", app.name, app.email, app.phone, ibCode]
     );
-    res.json({ success: true, message: "Application approved" });
+    res.json({ success: true, message: "Application approved", data: { ibCode } });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -2853,12 +2875,245 @@ router.get("/ib/settings", verifyToken, async (_req: AuthRequest, res: Response)
 router.put("/ib/settings", verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     await ensureIBTables();
-    const { min_deposit, commission_delay_days, auto_approve, ib_registration_open } = req.body;
+    const {
+      min_deposit,
+      commission_delay_days,
+      auto_approve,
+      ib_registration_open,
+      commission_model,
+      referral_base_url,
+    } = req.body;
+
+    // Only the two supported models are accepted; anything else would silently
+    // change how every future commission is calculated.
+    const model = commission_model === "percent_notional" ? "percent_notional" : "per_lot";
+
     await query(
-      `UPDATE ib_settings SET min_deposit = ?, commission_delay_days = ?, auto_approve = ?, ib_registration_open = ? WHERE id = 1`,
-      [min_deposit || 0, commission_delay_days || 0, auto_approve ? true : false, ib_registration_open ? true : false]
+      `UPDATE ib_settings
+          SET min_deposit = ?, commission_delay_days = ?, auto_approve = ?,
+              ib_registration_open = ?, commission_model = ?, referral_base_url = ?
+        WHERE id = 1`,
+      [
+        min_deposit || 0,
+        commission_delay_days || 0,
+        auto_approve ? true : false,
+        ib_registration_open ? true : false,
+        model,
+        referral_base_url || null,
+      ]
     );
     res.json({ success: true, message: "Settings saved" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// Withdrawal charges + withdrawal reporting
+// ─────────────────────────────────────────────────────────────
+
+/** Per-method withdrawal charge rules (USDT / Bank). */
+router.get("/withdrawal-fees", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const { getFeeRules } = await import("../lib/wallet.js");
+    res.json({ success: true, data: await getFeeRules() });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put("/withdrawal-fees/:method", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { saveFeeRule, WITHDRAWAL_METHODS } = await import("../lib/wallet.js");
+    const method = String(req.params.method || "").toLowerCase();
+    if (!(WITHDRAWAL_METHODS as string[]).includes(method)) {
+      return res.status(400).json({ success: false, error: "Unknown withdrawal method" });
+    }
+    const saved = await saveFeeRule(method as any, req.body || {});
+    res.json({ success: true, message: "Charges saved", data: saved });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Withdrawal report: every withdrawal with its method, fee and net payout.
+ *
+ * Fees live in `withdrawal_details` rather than on `fund_requests` because the
+ * application role cannot ALTER tables owned by `doadmin`.
+ */
+router.get("/reports/withdrawals", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { ensureWalletTables } = await import("../lib/wallet.js");
+    await ensureWalletTables();
+
+    const status = String(req.query.status || "").trim();
+    const method = String(req.query.method || "").trim();
+    const params: any[] = [];
+    const clauses: string[] = ["f.type = 'withdrawal'"];
+    if (status) { params.push(status); clauses.push(`f.status = $${params.length}`); }
+    if (method) { params.push(method); clauses.push(`d.method = $${params.length}`); }
+
+    const rows = await query(
+      `SELECT f.id, f.amount, f.status, f.reference_number, f.created_at, f.completed_at,
+              d.method, d.fee_amount, d.net_amount, d.fee_type, d.fee_value,
+              d.usdt_address, d.usdt_network, d.bank_name, d.bank_account_name,
+              d.bank_account_number, d.bank_ifsc, d.bank_swift,
+              u.email, u.first_name, u.last_name
+         FROM fund_requests f
+         LEFT JOIN withdrawal_details d ON d.fund_request_id = f.id::text
+         LEFT JOIN users u ON u.id = f.user_id
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY f.created_at DESC
+        LIMIT 500`,
+      params
+    );
+
+    const [totals] = (await query(
+      `SELECT COALESCE(SUM(f.amount), 0) AS gross,
+              COALESCE(SUM(d.fee_amount), 0) AS fees,
+              COALESCE(SUM(d.net_amount), 0) AS net,
+              COUNT(*) AS count,
+              COALESCE(SUM(CASE WHEN f.status IN ('pending','processing') THEN f.amount ELSE 0 END), 0) AS in_process
+         FROM fund_requests f
+         LEFT JOIN withdrawal_details d ON d.fund_request_id = f.id::text
+        WHERE f.type = 'withdrawal'`
+    )) as any[];
+
+    const byMethod = await query(
+      `SELECT COALESCE(d.method, f.method, 'unknown') AS method,
+              COUNT(*) AS count,
+              COALESCE(SUM(f.amount), 0) AS gross,
+              COALESCE(SUM(d.fee_amount), 0) AS fees
+         FROM fund_requests f
+         LEFT JOIN withdrawal_details d ON d.fund_request_id = f.id::text
+        WHERE f.type = 'withdrawal'
+        GROUP BY 1 ORDER BY 1`
+    );
+
+    res.json({
+      success: true,
+      data: {
+        rows,
+        totals: {
+          gross: Number(totals?.gross || 0),
+          fees: Number(totals?.fees || 0),
+          net: Number(totals?.net || 0),
+          count: Number(totals?.count || 0),
+          inProcess: Number(totals?.in_process || 0),
+        },
+        byMethod,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/** Deposit report, mirroring the withdrawal report for the Transactions menu. */
+router.get("/reports/deposits", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const status = String(req.query.status || "").trim();
+    const params: any[] = [];
+    const clauses: string[] = ["f.type = 'deposit'"];
+    if (status) { params.push(status); clauses.push(`f.status = $${params.length}`); }
+
+    const rows = await query(
+      `SELECT f.id, f.amount, f.method, f.status, f.reference_number, f.created_at, f.completed_at,
+              a.account_number, u.email, u.first_name, u.last_name
+         FROM fund_requests f
+         LEFT JOIN user_accounts a ON a.id = f.account_id
+         LEFT JOIN users u ON u.id = f.user_id
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY f.created_at DESC
+        LIMIT 500`,
+      params
+    );
+    const [totals] = (await query(
+      `SELECT COALESCE(SUM(amount), 0) AS gross, COUNT(*) AS count,
+              COALESCE(SUM(CASE WHEN status IN ('pending','processing') THEN amount ELSE 0 END), 0) AS in_process
+         FROM fund_requests WHERE type = 'deposit'`
+    )) as any[];
+
+    res.json({
+      success: true,
+      data: {
+        rows,
+        totals: {
+          gross: Number(totals?.gross || 0),
+          count: Number(totals?.count || 0),
+          inProcess: Number(totals?.in_process || 0),
+        },
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/** Commission ledger across all partners, for the admin Referrals view. */
+router.get("/ib/commissions", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    await matureCommissions();
+    const status = String(req.query.status || "").trim();
+    const params: any[] = [];
+    let where = "";
+    if (status) {
+      params.push(status);
+      where = `WHERE m.status = $${params.length}`;
+    }
+    const rows = await query(
+      `SELECT m.id, m.trade_id, m.symbol, m.volume, m.rate, m.model, m.amount, m.status,
+              m.matures_at, m.paid_at, m.created_at,
+              p.ib_code, p.name AS ib_name,
+              u.email AS client_email
+         FROM ib_commissions m
+         LEFT JOIN ib_partners p ON p.id = m.ib_id
+         LEFT JOIN users u ON u.id::text = m.client_user_id
+         ${where}
+        ORDER BY m.created_at DESC
+        LIMIT 500`,
+      params
+    );
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/** Clients referred by one partner. */
+router.get("/ib/partners/:id/clients", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    const rows = await query(
+      `SELECT c.id, c.client_user_id, c.status, c.lifetime_volume, c.lifetime_commission, c.created_at,
+              u.email, u.first_name, u.last_name
+         FROM ib_clients c
+         LEFT JOIN users u ON u.id::text = c.client_user_id
+        WHERE c.ib_id = $1
+        ORDER BY c.created_at DESC`,
+      [req.params.id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Recomputes every partner's cached counters from the ledger.
+ *
+ * A repair hatch for rows that predate the ledger or drifted after a manual
+ * database edit.
+ */
+router.post("/ib/recalculate", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureIBTables();
+    await matureCommissions();
+    const partners = await query(`SELECT id FROM ib_partners`);
+    for (const p of partners as any[]) await syncPartnerCounters(p.id);
+    res.json({ success: true, message: `Recalculated ${partners.length} partner(s)` });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

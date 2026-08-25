@@ -22,7 +22,7 @@ const MSIcon = ({ name, size = 18, color }) => (
 const fmt = (v) =>
   new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(Number(v) || 0)
 
-const TABS = ['Active IBs', 'Applications', 'IB Levels', 'Referral Transfer', 'Settings']
+const TABS = ['Active IBs', 'Applications', 'IB Levels', 'Commissions', 'Settings']
 
 // ────────────────────────────────────────────────────────────
 // Sub-views
@@ -54,7 +54,7 @@ function ActiveIBsTab({ token }) {
     !search ||
     (ib.name || '').toLowerCase().includes(search.toLowerCase()) ||
     (ib.email || '').toLowerCase().includes(search.toLowerCase()) ||
-    (ib.code || '').toLowerCase().includes(search.toLowerCase())
+    (ib.ib_code || '').toLowerCase().includes(search.toLowerCase())
   )
 
   return (
@@ -120,7 +120,7 @@ function ActiveIBsTab({ token }) {
                 </td>
                 <td className="px-3 py-2.5 text-slate-400 text-xs whitespace-nowrap">{ib.email}</td>
                 <td className="px-3 py-2.5 whitespace-nowrap">
-                  <span className="font-mono text-xs bg-slate-800 border border-slate-700 text-amber-400 px-2 py-0.5 rounded">{ib.code || '—'}</span>
+                  <span className="font-mono text-xs bg-slate-800 border border-slate-700 text-amber-400 px-2 py-0.5 rounded">{ib.ib_code || '—'}</span>
                 </td>
                 <td className="px-3 py-2.5 text-slate-300 whitespace-nowrap">{ib.referrals || 0}</td>
                 <td className="px-3 py-2.5 text-emerald-400 font-medium whitespace-nowrap">{fmt(ib.commission_earned)}</td>
@@ -364,18 +364,97 @@ function IBLevelsTab({ token, onCountChange }) {
   )
 }
 
-function ReferralTransferTab() {
+/** Commission ledger across all partners - the source of truth for IB money. */
+function CommissionsTab({ token }) {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [status, setStatus] = useState('')
+  const [error, setError] = useState('')
+
+  const load = React.useCallback(() => {
+    setLoading(true); setError('')
+    const qs = status ? `?status=${encodeURIComponent(status)}` : ''
+    fetch(`/api/admin/ib/commissions${qs}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(json => { if (json.success) setRows(json.data || []); else setError(json.error || 'Failed to load') })
+      .catch(() => setError('Request failed'))
+      .finally(() => setLoading(false))
+  }, [token, status])
+
+  useEffect(() => { load() }, [load])
+
+  const fmt = n => `$${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const badge = s => ({
+    pending: 'bg-amber-500/15 text-amber-400',
+    matured: 'bg-emerald-500/15 text-emerald-400',
+    paid: 'bg-slate-500/15 text-slate-400',
+  }[s] || 'bg-slate-500/15 text-slate-400')
+
   return (
-    <div className="flex flex-col items-center justify-center py-16 gap-3">
-      <MSIcon name="swap_horiz" size={44} color="#334155" />
-      <p className="text-slate-400 text-sm font-medium">Referral Transfer</p>
-      <p className="text-slate-600 text-xs max-w-xs text-center">Transfer referrals between IB partners. This feature will be available soon.</p>
+    <div>
+      <div className="flex items-center gap-2 mb-4">
+        {['', 'pending', 'matured', 'paid'].map(s => (
+          <button key={s || 'all'} onClick={() => setStatus(s)}
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${status === s ? 'bg-emerald-700 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}>
+            {s ? s[0].toUpperCase() + s.slice(1) : 'All'}
+          </button>
+        ))}
+        <button onClick={load} className="ml-auto px-3 py-1.5 rounded-md text-xs bg-slate-800 text-slate-400 hover:text-slate-200">Refresh</button>
+      </div>
+
+      {loading ? (
+        <div className="py-12 text-center text-slate-400 text-sm">Loading commissions…</div>
+      ) : error ? (
+        <div className="py-12 text-center text-red-400 text-sm">{error}</div>
+      ) : rows.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 gap-3">
+          <MSIcon name="payments" size={44} color="#334155" />
+          <p className="text-slate-400 text-sm font-medium">No commission yet</p>
+          <p className="text-slate-600 text-xs max-w-sm text-center">
+            Commission is recorded when a referred client closes a trade. Share a partner&apos;s
+            referral link, then close a trade on the referred account.
+          </p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="text-left text-xs text-slate-500 border-b border-slate-700">
+                <th className="py-2 pr-4 font-medium">Date</th>
+                <th className="py-2 pr-4 font-medium">Partner</th>
+                <th className="py-2 pr-4 font-medium">Client</th>
+                <th className="py-2 pr-4 font-medium">Symbol</th>
+                <th className="py-2 pr-4 font-medium text-right">Lots</th>
+                <th className="py-2 pr-4 font-medium text-right">Rate</th>
+                <th className="py-2 pr-4 font-medium text-right">Amount</th>
+                <th className="py-2 pr-4 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.id} className="border-b border-slate-800 text-slate-300">
+                  <td className="py-2 pr-4 whitespace-nowrap">{r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}</td>
+                  <td className="py-2 pr-4 whitespace-nowrap">{r.ib_name || '—'} <span className="text-slate-500">({r.ib_code || '—'})</span></td>
+                  <td className="py-2 pr-4">{r.client_email || '—'}</td>
+                  <td className="py-2 pr-4">{r.symbol || '—'}</td>
+                  <td className="py-2 pr-4 text-right">{Number(r.volume || 0)}</td>
+                  <td className="py-2 pr-4 text-right">{Number(r.rate || 0)}{r.model === 'percent_notional' ? '%' : '/lot'}</td>
+                  <td className="py-2 pr-4 text-right font-medium text-slate-100">{fmt(r.amount)}</td>
+                  <td className="py-2 pr-4">
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge(r.status)}`}>{r.status}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
 
 function IBSettingsTab({ token }) {
-  const [settings, setSettings] = useState({ min_deposit: '', commission_delay_days: '', auto_approve: false, ib_registration_open: false })
+  const [settings, setSettings] = useState({ min_deposit: '', commission_delay_days: '', auto_approve: false, ib_registration_open: false, commission_model: 'per_lot', referral_base_url: '' })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -415,6 +494,27 @@ function IBSettingsTab({ token }) {
             onChange={e => setSettings(s => ({ ...s, min_deposit: e.target.value }))}
             placeholder="e.g. 100"
             className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none" />
+        </div>
+        <div>
+          <label className="block text-xs text-slate-400 mb-1">Commission Model</label>
+          <select value={settings.commission_model || 'per_lot'}
+            onChange={e => setSettings(s => ({ ...s, commission_model: e.target.value }))}
+            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-emerald-500 focus:outline-none">
+            <option value="per_lot">Fixed amount per lot (rate = USD per lot)</option>
+            <option value="percent_notional">Percent of traded notional (rate = %)</option>
+          </select>
+          <p className="text-xs text-slate-500 mt-1">
+            Decides how each level&apos;s Commission Rate is read when a referred client closes a trade.
+            Changing this affects future commissions only.
+          </p>
+        </div>
+        <div>
+          <label className="block text-xs text-slate-400 mb-1">Referral Link Base URL</label>
+          <input type="text" value={settings.referral_base_url || ''}
+            onChange={e => setSettings(s => ({ ...s, referral_base_url: e.target.value }))}
+            placeholder="e.g. https://trade.ncapfx.com"
+            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none" />
+          <p className="text-xs text-slate-500 mt-1">Partner links become <code>&lt;base&gt;/register?ref=CODE</code>.</p>
         </div>
         <div>
           <label className="block text-xs text-slate-400 mb-1">Commission Payout Delay (days)</label>
@@ -533,7 +633,7 @@ export const IBProgram = () => {
     { label: 'Active IBs' },
     { label: 'Applications', badge: appCount },
     { label: 'IB Levels', badge: levelCount },
-    { label: 'Referral Transfer' },
+    { label: 'Commissions' },
     { label: 'Settings' },
   ]
 
@@ -584,7 +684,7 @@ export const IBProgram = () => {
         {activeTab === 0 && <ActiveIBsTab token={token} />}
         {activeTab === 1 && <ApplicationsTab token={token} onCountChange={setAppCount} />}
         {activeTab === 2 && <IBLevelsTab token={token} onCountChange={setLevelCount} />}
-        {activeTab === 3 && <ReferralTransferTab />}
+        {activeTab === 3 && <CommissionsTab token={token} />}
         {activeTab === 4 && <IBSettingsTab token={token} />}
       </Card>
     </div>

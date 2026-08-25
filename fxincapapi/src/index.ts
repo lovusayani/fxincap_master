@@ -32,6 +32,7 @@ import adminAuthRoutes from "./routes/adminAuth.js";
 import mamRoutes from "./routes/mam.js";
 import pammRoutes from "./routes/pamm.js";
 import ibRoutes from "./routes/ib.js";
+import walletRoutes from "./routes/wallet.js";
 import paymentRoutes from "./routes/payment.js";
 import brokerRoutes from "./routes/broker.js";
 import notificationRoutes from "./routes/notifications.js";
@@ -134,6 +135,9 @@ app.get("/api/docs", (_req: Request, res: Response) => {
 
 // Route registration
 app.use("/api/auth", authRoutes);
+// Withdrawal wallet. Mounted BEFORE the generic /api/user router so these
+// paths resolve here and cannot be shadowed by a route added there later.
+app.use("/api/user/wallet", walletRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/positions", positionRoutes);
 app.use("/api/trades", tradeRoutes);
