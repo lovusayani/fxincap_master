@@ -95,6 +95,27 @@ export const PGPORT = optionalNumber("PGPORT", 25060);
 /** Market data: fxincapws base URL used for authoritative server-side prices. */
 export const WS_QUOTE_BASE_URL = optional("WS_QUOTE_BASE_URL", "http://127.0.0.1:4040").replace(/\/$/, "");
 
+/**
+ * Trade workers (auto-close, price sync, SL/TP) mutate live financial state:
+ * they close positions and rewrite balances and equity. A developer machine
+ * pointed at the production database would run them alongside the real server,
+ * double-processing the same rows on real customer accounts.
+ *
+ * They are therefore OFF by default outside production. Set
+ * ENABLE_TRADE_WORKERS=true to force them on (production pm2 sets
+ * NODE_ENV=production, so nothing changes there).
+ *
+ * Do not rely on large *_POLL_MS values to disable them: those live in .env,
+ * which is untracked, and regenerating it from .env.example silently restores
+ * 4s/15s/5s polling. See docs/SECURITY.md and docs/PNL_ENGINE.md.
+ */
+export const TRADE_WORKERS_ENABLED = (() => {
+  const override = optional("ENABLE_TRADE_WORKERS", "").toLowerCase();
+  if (override === "true") return true;
+  if (override === "false") return false;
+  return process.env.NODE_ENV === "production";
+})();
+
 /** Worker intervals. */
 export const SL_TP_POLL_MS = optionalNumber("SL_TP_POLL_MS", 4000);
 export const TRADE_AUTO_CLOSE_POLL_MS = optionalNumber("TRADE_AUTO_CLOSE_POLL_MS", 15000);

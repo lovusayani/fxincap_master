@@ -9,7 +9,12 @@ import { fileURLToPath } from "url";
 // before lib/database.ts builds its Pool. A missing JWT_SECRET, database
 // coordinate or internal service token stops the process there with a listing of
 // everything that is missing. See docs/SECURITY.md §3 and §4.
-import { SL_TP_POLL_MS, TRADE_AUTO_CLOSE_POLL_MS, PRICE_SYNC_POLL_MS } from "./lib/env.js";
+import {
+  SL_TP_POLL_MS,
+  TRADE_AUTO_CLOSE_POLL_MS,
+  PRICE_SYNC_POLL_MS,
+  TRADE_WORKERS_ENABLED,
+} from "./lib/env.js";
 import { testConnection } from "./lib/database.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -173,10 +178,29 @@ app.use("/api/support", supportRoutes);
 app.use("/api/health", healthRoutes);
 app.use("/api/email", emailRoutes);
 
+/**
+ * Registers a background worker that mutates live financial state.
+ *
+ * Skipped entirely unless TRADE_WORKERS_ENABLED (production, or an explicit
+ * ENABLE_TRADE_WORKERS=true). This stops a developer machine connected to the
+ * production database from closing real positions alongside the live server.
+ */
+function registerTradeWorker(fn: () => Promise<void>, intervalMs: number): void {
+  if (!TRADE_WORKERS_ENABLED) return;
+  setInterval(fn, intervalMs);
+}
+
+if (!TRADE_WORKERS_ENABLED) {
+  console.warn(
+    "[TRADE] Background workers DISABLED (auto-close, price sync, SL/TP). " +
+      "NODE_ENV is not \"production\". Set ENABLE_TRADE_WORKERS=true to override."
+  );
+}
+
 const autoClosePollMs = TRADE_AUTO_CLOSE_POLL_MS;
 let autoCloseWorkerRunning = false;
 
-setInterval(async () => {
+registerTradeWorker(async () => {
   if (autoCloseWorkerRunning) {
     return;
   }
@@ -208,7 +232,7 @@ setInterval(async () => {
  */
 let priceSyncRunning = false;
 
-setInterval(async () => {
+registerTradeWorker(async () => {
   if (priceSyncRunning) return;
   priceSyncRunning = true;
   try {
@@ -230,7 +254,7 @@ setInterval(async () => {
 const slTpPollMs = SL_TP_POLL_MS;
 let slTpWorkerRunning = false;
 
-setInterval(async () => {
+registerTradeWorker(async () => {
   if (slTpWorkerRunning) return;
   slTpWorkerRunning = true;
   try {
