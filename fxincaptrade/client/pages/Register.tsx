@@ -39,6 +39,21 @@ export default function RegisterPage() {
     const [lastName, setLastName] = useState("");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
+    // IB referral code from the partner's link (?ref=CODE). Captured once on
+    // mount and kept in sessionStorage so it survives the email-verification
+    // round trip and any reload before the form is submitted.
+    const [referralCode] = useState<string>(() => {
+        const fromUrl = (searchParams.get("ref") || searchParams.get("referral") || "").trim().toUpperCase();
+        try {
+            if (fromUrl) {
+                sessionStorage.setItem("ib_ref", fromUrl);
+                return fromUrl;
+            }
+            return (sessionStorage.getItem("ib_ref") || "").trim().toUpperCase();
+        } catch {
+            return fromUrl;
+        }
+    });
     const [verificationDigits, setVerificationDigits] = useState<string[]>(() => Array(VERIFICATION_CODE_LENGTH).fill(""));
     const [loading, setLoading] = useState(false);
     const [resendLoading, setResendLoading] = useState(false);
@@ -180,13 +195,17 @@ export default function RegisterPage() {
             const res = await fetch(apiUrl("/api/auth/register"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ firstName, lastName, email, password }),
+                body: JSON.stringify({ firstName, lastName, email, password, referralCode: referralCode || undefined }),
             });
             const data = await res.json();
             if (!res.ok) {
                 setError(data?.message || data?.error || "Register failed");
                 return;
             }
+            // Attribution is recorded server-side at this point; drop the stored
+            // code so a later unrelated signup in the same browser is not
+            // credited to the same partner.
+            try { sessionStorage.removeItem("ib_ref"); } catch { /* non-fatal */ }
             setVerificationStep(true);
             setPassword("");
             setVerifyLaterChecked(false);
@@ -363,6 +382,11 @@ export default function RegisterPage() {
 
                 {!verificationStep ? (
                     <>
+                        {referralCode && (
+                            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+                                Referred by partner <span className="font-semibold">{referralCode}</span>
+                            </div>
+                        )}
                         <div>
                             <input
                                 value={firstName}

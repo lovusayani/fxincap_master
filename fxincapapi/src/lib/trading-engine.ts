@@ -449,6 +449,23 @@ export async function closeTrade(
 
     await conn.query("COMMIT");
     await logTradeAction(tradeId, trade.user_id, "TRADE_CLOSED", null, { closePrice, finalPnL });
+
+    // IB commission is accrued after the settlement transaction commits so a
+    // fault in referral bookkeeping can never roll back a client's trade. The
+    // ledger's UNIQUE trade_id makes the insert idempotent on retry.
+    try {
+      const { accrueTradeCommission } = await import("./ib.js");
+      await accrueTradeCommission({
+        tradeId,
+        userId: String(trade.user_id),
+        symbol: trade.symbol,
+        volume,
+        notional,
+      });
+    } catch (commissionError) {
+      console.error(`[IB] commission accrual failed for trade ${tradeId}:`, commissionError);
+    }
+
     return { success: true, finalPnL };
   } catch (error) {
     await conn.query("ROLLBACK").catch(() => {});

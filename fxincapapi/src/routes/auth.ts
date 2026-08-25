@@ -79,6 +79,10 @@ router.post("/register", async (req: Request, res: Response) => {
     await ensureUserEmailVerificationSupport();
 
     const { email, password, firstName, lastName, phone, countryCode } = req.body;
+    // Referral code carried from an IB link (?ref=CODE). Accepted under several
+    // names so the marketing site, trade app and direct API calls all work.
+    const referralCode =
+      req.body.referralCode ?? req.body.referral_code ?? req.body.ref ?? req.body.ibCode;
     const normalizedEmail = String(email || "").trim().toLowerCase();
     const normalizedFirstName = String(firstName || "").trim();
     const normalizedLastName = String(lastName || "").trim();
@@ -183,6 +187,23 @@ router.post("/register", async (req: Request, res: Response) => {
       );
 
       await query("INSERT INTO notification_preferences (id, user_id) VALUES ($1, $2)", [uuidv4(), userId]);
+    }
+
+    // Attribute the signup to an IB when it arrived through a referral link.
+    // An unknown or inactive code leaves the user unattributed rather than
+    // failing registration, and a failure here must never lose the account that
+    // was just created.
+    if (referralCode) {
+      try {
+        const { ensureIBTables, attachReferral } = await import("../lib/ib.js");
+        await ensureIBTables();
+        const ibId = await attachReferral(userId, referralCode, null);
+        if (!ibId) {
+          console.warn(`[IB] signup ${normalizedEmail} used unknown/inactive referral code`);
+        }
+      } catch (referralError) {
+        console.error("[IB] referral attribution failed:", referralError);
+      }
     }
 
     const verification = await createUserEmailVerification({
