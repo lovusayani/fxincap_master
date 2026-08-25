@@ -173,8 +173,9 @@ const menus = [
     label: 'Transactions', icon: 'account_balance_wallet', children: [
       { label: 'Wallet', path: '/wallet' },
       { label: 'All Pendings', path: '/all-pendings' },
-      { label: 'Deposite' },
-      { label: 'Withdraw' },
+      { label: 'Deposits', path: '/deposits' },
+      { label: 'Withdrawals', path: '/withdrawals' },
+      { label: 'Withdrawal Charges', path: '/withdrawal-charges' },
     ]
   },
   {

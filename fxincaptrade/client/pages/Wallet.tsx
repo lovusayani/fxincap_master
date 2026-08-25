@@ -1,487 +1,516 @@
-import React, { useEffect, useMemo, useState } from "react";
+/**
+ * Wallet — total balance, per-account funding history, one-way sweep into the
+ * withdrawal wallet, and withdrawals to USDT or a bank account.
+ *
+ * The withdrawal wallet is separate from trading balance on purpose: funds are
+ * swept out of a trading account first, and that sweep cannot be reversed. The
+ * UI states this before every transfer, but the rule is enforced server-side.
+ */
+
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { ArrowRight, CreditCard, RefreshCw, Wallet } from "lucide-react";
+import { ArrowRight, ArrowDownToLine, ArrowUpFromLine, RefreshCw, Wallet as WalletIcon, ShieldAlert, Loader2 } from "lucide-react";
 import Header from "@/components/Header";
 import { apiUrl } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import {
-  Pagination,
-  PaginationContent,
-  PaginationEllipsis,
-  PaginationItem,
-  PaginationLink,
-  PaginationNext,
-  PaginationPrevious,
-} from "@/components/ui/pagination";
 
-type DepositOffer = {
-  id: string;
-  title: string;
-  description: string;
-  badge?: string | null;
-};
-
-type DepositRow = {
-  id: string;
-  reference: string;
-  amount: number;
-  status: string;
-  paymentMethod?: string | null;
-  method?: string | null;
-  paymentChain?: string | null;
-  createdAt: string;
-  accountNumber?: string | null;
-  accountMode?: string | null;
-};
-
-type AccountOption = {
+type AccountRow = {
   id: string;
   accountNumber: string;
-  tradingMode: string;
-};
-
-type RealBalanceSummary = {
   balance: number;
   equity: number;
-  freeMargin: number;
+  available: number;
+  locked: number;
   currency: string;
-  accountNumber?: string;
+  leverage?: number;
+  status?: string;
+  totalDeposited: number;
+  depositCount: number;
+  totalSweptToWallet: number;
+  sweepCount: number;
 };
 
-type WeeklyDepositPoint = {
-  label: string;
+type RecentRow = {
+  id: string;
+  type: string;
   amount: number;
+  method?: string | null;
+  status: string;
+  reference_number?: string | null;
+  created_at: string;
+  fee_amount?: number | null;
+  net_amount?: number | null;
 };
 
-const ROWS_PER_PAGE = 8;
+type TransferRow = { id: string; account_number?: string | null; amount: number; created_at: string };
 
-const formatMoney = (amount: number, currency = "USD") =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(amount || 0));
-
-const statusTone = (status: string) => {
-  const value = String(status || "").toLowerCase();
-  if (value === "approved" || value === "completed") return "bg-emerald-500/20 text-emerald-300 border-emerald-500/20";
-  if (value === "rejected" || value === "failed") return "bg-rose-500/20 text-rose-300 border-rose-500/20";
-  return "bg-amber-500/20 text-amber-300 border-amber-500/20";
+type FeeRule = {
+  method: "usdt" | "bank";
+  enabled: boolean;
+  fee_type: "percent" | "fixed";
+  fee_value: number;
+  min_fee: number;
+  max_fee: number | null;
+  min_amount: number;
+  max_amount: number | null;
 };
 
-function getMonthWeekBuckets(rows: DepositRow[]): WeeklyDepositPoint[] {
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  const points = [0, 0, 0, 0, 0];
+type Summary = {
+  walletBalance: number;
+  tradingBalance: number;
+  totalBalance: number;
+  totals: { deposited: number; withdrawn: number; pendingWithdrawal: number; pendingDeposit: number };
+  accounts: AccountRow[];
+  recent: RecentRow[];
+  transfers: TransferRow[];
+  kycApproved: boolean;
+};
 
-  for (const row of rows) {
-    const createdAt = new Date(row.createdAt);
-    if (Number.isNaN(createdAt.getTime())) {
-      continue;
-    }
+const money = (n: unknown) =>
+  `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-    if (createdAt < monthStart || createdAt >= nextMonthStart) {
-      continue;
-    }
+const token = () => localStorage.getItem("token") || "";
+const authH = () => ({ "Content-Type": "application/json", Authorization: `Bearer ${token()}` });
 
-    const normalizedStatus = String(row.status || "").toLowerCase();
-    if (normalizedStatus !== "approved" && normalizedStatus !== "completed") {
-      continue;
-    }
-
-    const dayOfMonth = createdAt.getDate();
-    const bucketIndex = Math.min(Math.floor((dayOfMonth - 1) / 7), points.length - 1);
-    points[bucketIndex] += Number(row.amount || 0);
-  }
-
-  return points.map((amount, index) => ({
-    label: `Week ${index + 1}`,
-    amount,
-  }));
-}
-
-function buildPaginationItems(page: number, totalPages: number) {
-  if (totalPages <= 5) {
-    return Array.from({ length: totalPages }, (_, index) => index + 1);
-  }
-
-  if (page <= 3) {
-    return [1, 2, 3, 4, "ellipsis", totalPages];
-  }
-
-  if (page >= totalPages - 2) {
-    return [1, "ellipsis", totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
-  }
-
-  return [1, "ellipsis", page - 1, page, page + 1, "ellipsis", totalPages];
+function StatusPill({ status }: { status: string }) {
+  const s = String(status || "").toLowerCase();
+  const cls =
+    s === "completed" ? "bg-emerald-500/15 text-emerald-400"
+    : s === "rejected" || s === "failed" ? "bg-red-500/15 text-red-400"
+    : "bg-amber-500/15 text-amber-400";
+  const label = s === "pending" || s === "processing" ? "In process" : s.charAt(0).toUpperCase() + s.slice(1);
+  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{label}</span>;
 }
 
 export default function WalletPage() {
   const navigate = useNavigate();
-  const [offers, setOffers] = useState<DepositOffer[]>([]);
-  const [depositRows, setDepositRows] = useState<DepositRow[]>([]);
-  const [realBalance, setRealBalance] = useState<RealBalanceSummary>({
-    balance: 0,
-    equity: 0,
-    freeMargin: 0,
-    currency: "USD",
-    accountNumber: undefined,
-  });
+  const [data, setData] = useState<Summary | null>(null);
+  const [fees, setFees] = useState<FeeRule[]>([]);
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(1);
-  const [accounts, setAccounts] = useState<AccountOption[]>([]);
-  const [accountFilter, setAccountFilter] = useState<string>("ALL");
+  const [error, setError] = useState("");
+  const [showTransfer, setShowTransfer] = useState(false);
+  const [showWithdraw, setShowWithdraw] = useState(false);
 
-  const token = localStorage.getItem("auth_token");
-  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
-
-  useEffect(() => {
-    let active = true;
-
-    const loadWalletData = async () => {
-      setLoading(true);
-      try {
-        const [balanceResponse, offersResponse, requestsResponse, accountsResponse] = await Promise.all([
-          fetch(apiUrl("/api/user/balance?mode=real"), { headers: authHeaders }),
-          fetch(apiUrl("/api/user/deposit-offers"), { headers: authHeaders }),
-          fetch(apiUrl("/api/user/fund-requests"), { headers: authHeaders }),
-          fetch(apiUrl("/api/user/accounts"), { headers: authHeaders }),
-        ]);
-
-        const nextBalance: RealBalanceSummary = {
-          balance: 0,
-          equity: 0,
-          freeMargin: 0,
-          currency: "USD",
-          accountNumber: undefined,
-        };
-
-        if (balanceResponse.ok) {
-          const balancePayload = await balanceResponse.json();
-          const account = balancePayload?.balance || balancePayload?.data || balancePayload?.account || {};
-          nextBalance.balance = Number(account.balance || 0);
-          nextBalance.equity = Number(account.equity || 0);
-          nextBalance.freeMargin = Number(account.freeMargin ?? account.availableBalance ?? 0);
-          nextBalance.currency = account.currency || "USD";
-          nextBalance.accountNumber = account.accountNumber || account.account_number || undefined;
-        }
-
-        const offersPayload = offersResponse.ok ? await offersResponse.json() : null;
-        const requestsPayload = requestsResponse.ok ? await requestsResponse.json() : null;
-        const accountsPayload = accountsResponse.ok ? await accountsResponse.json() : null;
-        const nextRows = Array.isArray(requestsPayload?.requests)
-          ? requestsPayload.requests.filter((item: DepositRow & { type?: string }) => String(item?.type || "").toLowerCase() === "deposit")
-          : [];
-        const nextAccounts = Array.isArray(accountsPayload?.data)
-          ? accountsPayload.data.map((row: any) => ({
-              id: String(row?.id ?? ""),
-              accountNumber: row?.accountNumber || row?.account_number || "",
-              tradingMode: row?.tradingMode || row?.trading_mode || "demo",
-            }))
-          : [];
-
-        if (!active) {
-          return;
-        }
-
-        setRealBalance(nextBalance);
-        setOffers(Array.isArray(offersPayload?.data) ? offersPayload.data : []);
-        setDepositRows(nextRows);
-        setAccounts(nextAccounts);
-      } catch {
-        if (!active) {
-          return;
-        }
-
-        setOffers([]);
-        setDepositRows([]);
-        setRealBalance({
-          balance: 0,
-          equity: 0,
-          freeMargin: 0,
-          currency: "USD",
-          accountNumber: undefined,
-        });
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void loadWalletData();
-
-    return () => {
-      active = false;
-    };
+  const load = useCallback(async () => {
+    setLoading(true); setError("");
+    try {
+      const [sRes, fRes] = await Promise.all([
+        fetch(apiUrl("/api/user/wallet/summary"), { headers: authH() }),
+        fetch(apiUrl("/api/user/wallet/fees"), { headers: authH() }),
+      ]);
+      const sJson = await sRes.json();
+      if (sJson.success) setData(sJson.data);
+      else setError(sJson.error || "Failed to load wallet");
+      const fJson = await fRes.json();
+      if (fJson.success) setFees(fJson.data || []);
+    } catch {
+      setError("Unable to reach the server");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const filteredDepositRows = useMemo(() => {
-    if (accountFilter === "ALL") {
-      return depositRows;
-    }
-    return depositRows.filter((row) => row.accountNumber === accountFilter);
-  }, [depositRows, accountFilter]);
+  useEffect(() => { load(); }, [load]);
 
-  useEffect(() => {
-    setPage(1);
-  }, [accountFilter]);
-
-  useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(filteredDepositRows.length / ROWS_PER_PAGE));
-    if (page > totalPages) {
-      setPage(totalPages);
-    }
-  }, [filteredDepositRows.length, page]);
-
-  const weeklyDepositData = useMemo(() => getMonthWeekBuckets(filteredDepositRows), [filteredDepositRows]);
-  const totalDepositAmount = useMemo(
-    () => filteredDepositRows.reduce((sum, row) => sum + Number(row.amount || 0), 0),
-    [filteredDepositRows]
-  );
-  const totalPages = Math.max(1, Math.ceil(filteredDepositRows.length / ROWS_PER_PAGE));
-  const paginatedRows = useMemo(() => {
-    const startIndex = (page - 1) * ROWS_PER_PAGE;
-    return filteredDepositRows.slice(startIndex, startIndex + ROWS_PER_PAGE);
-  }, [filteredDepositRows, page]);
-  const paginationItems = buildPaginationItems(page, totalPages);
+  const realAccounts = useMemo(() => data?.accounts ?? [], [data]);
 
   return (
-    <>
+    <div className="min-h-screen bg-black text-white">
       <Header />
-      <div className="w-full px-4 py-4 sm:px-6 lg:px-8 space-y-4">
-        <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-5 shadow-[0_20px_60px_rgba(15,23,42,0.28)] lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.22em] text-cyan-300/80">Wallet Center</p>
-            <h1 className="mt-2 text-2xl font-semibold text-white">Manage deposits and monitor wallet activity</h1>
-            <p className="mt-2 max-w-2xl text-sm text-gray-400">
-              Review monthly deposit movement, active promotions, and your deposit request history from one page.
-            </p>
-          </div>
-          <Button type="button" size="lg" className="h-11 rounded-xl px-5" onClick={() => navigate("/deposit")}>
-            Add Deposit
-            <ArrowRight className="h-4 w-4" />
+      <div className="mx-auto max-w-6xl p-4 space-y-6">
+
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold">Wallet</h1>
+          <Button variant="ghost" size="sm" onClick={load} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </Button>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-          <Card className="xl:col-span-5 rounded-2xl border-white/15 bg-white/5 backdrop-blur-md">
-            <CardHeader>
-              <CardTitle>Monthly Deposit Trend</CardTitle>
-              <p className="text-sm text-gray-400">Approved deposits grouped by week for the current month.</p>
-            </CardHeader>
+        {error && <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</div>}
+
+        {/* Headline balances */}
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Card className="bg-[#101321] border-white/10 sm:col-span-2">
+            <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-white/60">Total Balance</CardTitle></CardHeader>
             <CardContent>
-              <div className="h-72 rounded-2xl border border-white/10 bg-gradient-to-br from-cyan-500/10 via-slate-900/50 to-emerald-500/10 p-4">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={weeklyDepositData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.10)" />
-                    <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 12 }} axisLine={false} tickLine={false} />
-                    <YAxis
-                      tick={{ fill: "#94a3b8", fontSize: 12 }}
-                      axisLine={false}
-                      tickLine={false}
-                      tickFormatter={(value) => `$${value}`}
-                    />
-                    <Tooltip
-                      cursor={{ fill: "rgba(34,197,94,0.08)" }}
-                      contentStyle={{
-                        background: "rgba(2,6,23,0.94)",
-                        border: "1px solid rgba(34,197,94,0.2)",
-                        borderRadius: "12px",
-                        color: "#f8fafc",
-                      }}
-                      formatter={(value: number) => [formatMoney(value), "Deposited"]}
-                    />
-                    <Bar dataKey="amount" radius={[10, 10, 0, 0]} fill="#22c55e" />
-                  </BarChart>
-                </ResponsiveContainer>
+              <p className="text-3xl font-bold">{money(data?.totalBalance)}</p>
+              <p className="mt-1 text-xs text-white/50">
+                Trading {money(data?.tradingBalance)} · Withdrawal wallet {money(data?.walletBalance)}
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => navigate("/deposit")}>
+                  <ArrowDownToLine className="mr-1.5 h-4 w-4" /> Add Deposit
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => setShowTransfer(true)}>
+                  <ArrowRight className="mr-1.5 h-4 w-4" /> Transfer to Wallet
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => setShowWithdraw(true)}>
+                  <ArrowUpFromLine className="mr-1.5 h-4 w-4" /> Withdraw
+                </Button>
               </div>
             </CardContent>
           </Card>
 
-          <Card className="xl:col-span-4 rounded-2xl border-white/15 bg-white/5 backdrop-blur-md">
-            <CardHeader className="flex flex-row items-center justify-between gap-3">
-              <div>
-                <CardTitle>Deposit Offers</CardTitle>
-                <p className="mt-1 text-sm text-gray-400">Live promotional offers pulled from admin settings.</p>
-              </div>
-              <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-xs text-cyan-300">
-                {offers.length} active
-              </span>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {offers.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-8 text-center text-sm text-gray-400">
-                  No active deposit offers right now.
-                </div>
-              ) : (
-                offers.slice(0, 3).map((offer) => (
-                  <div key={offer.id} className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-base font-semibold text-white">{offer.title}</p>
-                      {offer.badge ? (
-                        <span className="rounded-full bg-blue-500/20 px-2.5 py-1 text-xs text-blue-300">{offer.badge}</span>
-                      ) : null}
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-gray-300">{offer.description}</p>
-                  </div>
-                ))
-              )}
+          <Card className="bg-[#101321] border-white/10">
+            <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-white/60">Withdrawal Wallet</CardTitle></CardHeader>
+            <CardContent>
+              <p className="text-2xl font-bold text-emerald-400">{money(data?.walletBalance)}</p>
+              <p className="mt-1 text-xs text-white/50">Available to withdraw</p>
             </CardContent>
           </Card>
 
-          <Card className="xl:col-span-3 rounded-2xl border-white/15 bg-white/5 backdrop-blur-md">
-            <CardHeader>
-              <CardTitle>Real Balance Overview</CardTitle>
-              <p className="mt-1 text-sm text-gray-400">Your current real wallet balance and total deposit volume.</p>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
-                <div className="flex items-center gap-3 text-emerald-200">
-                  <Wallet className="h-5 w-5" />
-                  <span className="text-xs uppercase tracking-[0.18em]">Real Balance</span>
-                </div>
-                <p className="mt-3 text-3xl font-semibold text-white">{formatMoney(realBalance.balance, realBalance.currency)}</p>
-                <p className="mt-2 text-sm text-emerald-100/80">
-                  Equity: {formatMoney(realBalance.equity, realBalance.currency)}
-                </p>
-                <p className="text-sm text-emerald-100/80">
-                  Free Margin: {formatMoney(realBalance.freeMargin, realBalance.currency)}
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <div className="flex items-center gap-3 text-gray-300">
-                  <CreditCard className="h-5 w-5 text-cyan-300" />
-                  <span className="text-xs uppercase tracking-[0.18em]">Total Deposits</span>
-                </div>
-                <p className="mt-3 text-2xl font-semibold text-white">{formatMoney(totalDepositAmount, realBalance.currency)}</p>
-                <p className="mt-2 text-sm text-gray-400">
-                  {realBalance.accountNumber ? `Real account: ${realBalance.accountNumber}` : "Real account number not available"}
-                </p>
-              </div>
-
-              <Button type="button" size="lg" className="h-11 w-full rounded-xl" onClick={() => navigate("/deposit")}>
-                Add Deposit
-              </Button>
+          <Card className="bg-[#101321] border-white/10">
+            <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-white/60">Totals</CardTitle></CardHeader>
+            <CardContent className="space-y-1 text-sm">
+              <div className="flex justify-between"><span className="text-white/50">Deposited</span><span className="font-medium">{money(data?.totals.deposited)}</span></div>
+              <div className="flex justify-between"><span className="text-white/50">Withdrawn</span><span className="font-medium">{money(data?.totals.withdrawn)}</span></div>
+              <div className="flex justify-between"><span className="text-white/50">In process</span><span className="font-medium text-amber-400">{money(data?.totals.pendingWithdrawal)}</span></div>
             </CardContent>
           </Card>
         </div>
 
-        <Card className="rounded-2xl border-white/15 bg-white/5 backdrop-blur-md">
-          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <CardTitle>Deposit Report</CardTitle>
-              <p className="mt-1 text-sm text-gray-400">All deposit requests for this user with current approval status.</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={accountFilter}
-                onChange={(e) => setAccountFilter(e.target.value)}
-                className="h-10 rounded-xl border border-white/15 bg-black/30 px-3 text-sm text-gray-200 focus:outline-none focus:border-white/30 transition cursor-pointer"
-              >
-                <option value="ALL" className="bg-gray-900">All Accounts</option>
-                {accounts.map((acct) => (
-                  <option key={acct.id} value={acct.accountNumber} className="bg-gray-900">
-                    {acct.accountNumber} ({acct.tradingMode.toUpperCase()})
-                  </option>
-                ))}
-              </select>
-              <Button type="button" variant="outline" className="h-10 rounded-xl border-white/15 text-gray-200 hover:bg-white/10" onClick={() => window.location.reload()}>
-                <RefreshCw className="mr-2 h-4 w-4" />
-                Refresh
+        {!data?.kycApproved && (
+          <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <div className="text-sm">
+              <p className="font-medium text-amber-300">KYC verification required to withdraw</p>
+              <p className="text-xs text-amber-200/70">You can deposit and transfer, but withdrawals stay locked until your KYC is approved.</p>
+              <Button size="sm" variant="link" className="h-auto p-0 text-amber-300" onClick={() => navigate("/profile")}>
+                Complete KYC →
               </Button>
             </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {loading ? (
-              <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-10 text-center text-sm text-gray-400">
-                Loading wallet report...
-              </div>
-            ) : filteredDepositRows.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-10 text-center text-sm text-gray-400">
-                {accountFilter === "ALL" ? "No deposit requests found for this user yet." : "No deposits found for this account."}
-              </div>
-            ) : (
-              <>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Account</TableHead>
-                      <TableHead>Reference</TableHead>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Method</TableHead>
-                      <TableHead>Chain</TableHead>
-                      <TableHead className="text-right">Amount</TableHead>
-                      <TableHead className="text-right">Status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {paginatedRows.map((row) => (
-                      <TableRow key={row.id}>
-                        <TableCell>
-                          {row.accountNumber ? (
-                            <>
-                              <div className="font-mono text-xs text-white">{row.accountNumber}</div>
-                              {row.accountMode && (
-                                <div className="text-[10px] uppercase text-gray-500">{row.accountMode}</div>
-                              )}
-                            </>
-                          ) : (
-                            <span className="text-gray-500">—</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="font-medium text-white">{row.reference || row.id}</TableCell>
-                        <TableCell>{new Date(row.createdAt).toLocaleDateString()}</TableCell>
-                        <TableCell>{row.paymentMethod || row.method || "Manual"}</TableCell>
-                        <TableCell>{row.paymentChain || "-"}</TableCell>
-                        <TableCell className="text-right font-medium text-white">{formatMoney(Number(row.amount || 0), realBalance.currency)}</TableCell>
-                        <TableCell className="text-right">
-                          <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium capitalize ${statusTone(row.status)}`}>
-                            {row.status || "pending"}
-                          </span>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+          </div>
+        )}
 
-                <div className="flex flex-col gap-3 border-t border-white/10 pt-4 text-sm text-gray-400 sm:flex-row sm:items-center sm:justify-between">
-                  <p>
-                    Showing {(page - 1) * ROWS_PER_PAGE + 1} to {Math.min(page * ROWS_PER_PAGE, filteredDepositRows.length)} of {filteredDepositRows.length} deposits
-                  </p>
-                  <Pagination className="mx-0 w-auto justify-end">
-                    <PaginationContent>
-                      <PaginationItem>
-                        <PaginationPrevious onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page === 1} />
-                      </PaginationItem>
-                      {paginationItems.map((item, index) => (
-                        <PaginationItem key={`${item}-${index}`}>
-                          {item === "ellipsis" ? (
-                            <PaginationEllipsis />
-                          ) : (
-                            <PaginationLink isActive={page === item} onClick={() => setPage(Number(item))}>
-                              {item}
-                            </PaginationLink>
-                          )}
-                        </PaginationItem>
-                      ))}
-                      <PaginationItem>
-                        <PaginationNext onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={page === totalPages} />
-                      </PaginationItem>
-                    </PaginationContent>
-                  </Pagination>
-                </div>
-              </>
-            )}
+        {/* Account-wise breakdown */}
+        <Card className="bg-[#101321] border-white/10">
+          <CardHeader><CardTitle className="text-sm">Accounts</CardTitle></CardHeader>
+          <CardContent className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Account</TableHead>
+                  <TableHead className="text-right">Balance</TableHead>
+                  <TableHead className="text-right">Available</TableHead>
+                  <TableHead className="text-right">Total Deposited</TableHead>
+                  <TableHead className="text-right">Moved to Wallet</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {realAccounts.length === 0 ? (
+                  <TableRow><TableCell colSpan={5} className="py-8 text-center text-white/40">No real accounts yet</TableCell></TableRow>
+                ) : realAccounts.map((a) => (
+                  <TableRow key={a.id}>
+                    <TableCell className="font-mono text-xs">{a.accountNumber}</TableCell>
+                    <TableCell className="text-right">{money(a.balance)}</TableCell>
+                    <TableCell className="text-right text-white/70">{money(a.available)}</TableCell>
+                    <TableCell className="text-right text-emerald-400">{money(a.totalDeposited)}</TableCell>
+                    <TableCell className="text-right text-amber-400">{money(a.totalSweptToWallet)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </CardContent>
         </Card>
+
+        {/* Recent deposits & withdrawals */}
+        <Card className="bg-[#101321] border-white/10">
+          <CardHeader><CardTitle className="text-sm">Recent Transactions</CardTitle></CardHeader>
+          <CardContent className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Method</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead className="text-right">Fee</TableHead>
+                  <TableHead className="text-right">Net</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(data?.recent ?? []).length === 0 ? (
+                  <TableRow><TableCell colSpan={7} className="py-8 text-center text-white/40">No transactions yet</TableCell></TableRow>
+                ) : data!.recent.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell className="whitespace-nowrap text-xs">{new Date(r.created_at).toLocaleDateString()}</TableCell>
+                    <TableCell className="capitalize">{r.type}</TableCell>
+                    <TableCell className="uppercase text-xs text-white/60">{r.method || "—"}</TableCell>
+                    <TableCell className="text-right">{money(r.amount)}</TableCell>
+                    <TableCell className="text-right text-white/60">{r.fee_amount != null ? money(r.fee_amount) : "—"}</TableCell>
+                    <TableCell className="text-right">{r.net_amount != null ? money(r.net_amount) : "—"}</TableCell>
+                    <TableCell><StatusPill status={r.status} /></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+
+        {/* Sweep history */}
+        {(data?.transfers ?? []).length > 0 && (
+          <Card className="bg-[#101321] border-white/10">
+            <CardHeader><CardTitle className="text-sm">Transfers to Withdrawal Wallet</CardTitle></CardHeader>
+            <CardContent className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead>Date</TableHead><TableHead>From Account</TableHead><TableHead className="text-right">Amount</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data!.transfers.map((t) => (
+                    <TableRow key={t.id}>
+                      <TableCell className="text-xs">{new Date(t.created_at).toLocaleString()}</TableCell>
+                      <TableCell className="font-mono text-xs">{t.account_number || "—"}</TableCell>
+                      <TableCell className="text-right">{money(t.amount)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
       </div>
-    </>
+
+      {showTransfer && (
+        <TransferModal accounts={realAccounts} onClose={() => setShowTransfer(false)} onDone={() => { setShowTransfer(false); load(); }} />
+      )}
+      {showWithdraw && (
+        <WithdrawModal
+          fees={fees}
+          walletBalance={data?.walletBalance ?? 0}
+          kycApproved={!!data?.kycApproved}
+          onClose={() => setShowWithdraw(false)}
+          onDone={() => { setShowWithdraw(false); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-xl border border-white/10 bg-[#101321] p-5" onClick={(e) => e.stopPropagation()}>
+        <h2 className="mb-4 text-lg font-semibold">{title}</h2>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const inputCls = "w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-sm text-white";
+
+/** One-way sweep from a real account into the withdrawal wallet. */
+function TransferModal({ accounts, onClose, onDone }: { accounts: AccountRow[]; onClose: () => void; onDone: () => void }) {
+  const [accountId, setAccountId] = useState(accounts[0]?.id || "");
+  const [amount, setAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const selected = accounts.find((a) => a.id === accountId);
+
+  const submit = async () => {
+    setBusy(true); setErr("");
+    try {
+      const res = await fetch(apiUrl("/api/user/wallet/transfer"), {
+        method: "POST", headers: authH(), body: JSON.stringify({ accountId, amount: Number(amount) }),
+      });
+      const json = await res.json();
+      if (json.success) onDone();
+      else setErr(json.error || "Transfer failed");
+    } catch { setErr("Request failed"); } finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title="Transfer to Withdrawal Wallet" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          This is one-way. Funds moved into the withdrawal wallet cannot be returned to a trading account.
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-white/60">From account</label>
+          <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputCls}>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>{a.accountNumber} — {money(a.available)} available</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-white/60">Amount</label>
+          <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className={inputCls} />
+          {selected && (
+            <button type="button" className="mt-1 text-xs text-emerald-400" onClick={() => setAmount(String(selected.available))}>
+              Use max ({money(selected.available)})
+            </button>
+          )}
+        </div>
+        {err && <p className="text-xs text-red-400">{err}</p>}
+        <div className="flex gap-2 pt-1">
+          <Button className="flex-1" onClick={submit} disabled={busy || !accountId || !(Number(amount) > 0)}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Confirm Transfer"}
+          </Button>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** Withdraw from the wallet to USDT or a bank account. */
+function WithdrawModal({
+  fees, walletBalance, kycApproved, onClose, onDone,
+}: { fees: FeeRule[]; walletBalance: number; kycApproved: boolean; onClose: () => void; onDone: () => void }) {
+  const [method, setMethod] = useState<"usdt" | "bank">("usdt");
+  const [amount, setAmount] = useState("");
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [quote, setQuote] = useState<{ fee: number; net: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const rule = fees.find((f) => f.method === method);
+
+  // Fee preview comes from the server so the trader never sees a figure the
+  // backend would disagree with.
+  useEffect(() => {
+    const amt = Number(amount);
+    if (!(amt > 0)) { setQuote(null); return; }
+    let cancelled = false;
+    const id = setTimeout(async () => {
+      try {
+        const res = await fetch(apiUrl("/api/user/wallet/quote"), {
+          method: "POST", headers: authH(), body: JSON.stringify({ method, amount: amt }),
+        });
+        const json = await res.json();
+        if (!cancelled) {
+          if (json.success) { setQuote(json.data); setErr(""); }
+          else { setQuote(null); setErr(json.error || ""); }
+        }
+      } catch { /* preview only */ }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [amount, method]);
+
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const submit = async () => {
+    setBusy(true); setErr("");
+    try {
+      const res = await fetch(apiUrl("/api/user/wallet/withdraw"), {
+        method: "POST", headers: authH(), body: JSON.stringify({ method, amount: Number(amount), ...form }),
+      });
+      const json = await res.json();
+      if (json.success) onDone();
+      else setErr(json.error || "Withdrawal failed");
+    } catch { setErr("Request failed"); } finally { setBusy(false); }
+  };
+
+  if (!kycApproved) {
+    return (
+      <Modal title="Withdraw" onClose={onClose}>
+        <div className="space-y-3">
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-sm text-amber-300">
+            Your KYC must be approved before you can withdraw.
+          </div>
+          <Button className="w-full" variant="secondary" onClick={onClose}>Close</Button>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title="Withdraw" onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-xs text-white/50">Available in withdrawal wallet: <span className="font-medium text-emerald-400">{money(walletBalance)}</span></p>
+
+        <div className="grid grid-cols-2 gap-2">
+          {(["usdt", "bank"] as const).map((m) => {
+            const r = fees.find((f) => f.method === m);
+            const disabled = r ? !r.enabled : false;
+            return (
+              <button key={m} type="button" disabled={disabled} onClick={() => setMethod(m)}
+                className={`rounded-lg border px-3 py-2 text-sm transition-colors disabled:opacity-40 ${
+                  method === m ? "border-emerald-500 bg-emerald-500/10 text-emerald-300" : "border-white/15 text-white/70"}`}>
+                {m === "usdt" ? "USDT" : "Bank Account"}
+              </button>
+            );
+          })}
+        </div>
+
+        {rule && (
+          <p className="text-xs text-white/50">
+            Charge: {rule.fee_type === "percent" ? `${rule.fee_value}%` : money(rule.fee_value)}
+            {rule.min_fee > 0 && ` (min ${money(rule.min_fee)})`}
+            {rule.max_fee != null && ` (max ${money(rule.max_fee)})`}
+            {rule.min_amount > 0 && ` · Min amount ${money(rule.min_amount)}`}
+          </p>
+        )}
+
+        <div>
+          <label className="mb-1 block text-xs text-white/60">Amount</label>
+          <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className={inputCls} />
+        </div>
+
+        {quote && (
+          <div className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-xs space-y-1">
+            <div className="flex justify-between"><span className="text-white/50">Deducted from wallet</span><span>{money(Number(amount))}</span></div>
+            <div className="flex justify-between"><span className="text-white/50">Charge</span><span className="text-amber-400">-{money(quote.fee)}</span></div>
+            <div className="flex justify-between font-medium"><span>You receive</span><span className="text-emerald-400">{money(quote.net)}</span></div>
+          </div>
+        )}
+
+        {method === "usdt" ? (
+          <>
+            <div>
+              <label className="mb-1 block text-xs text-white/60">USDT Address</label>
+              <input value={form.usdtAddress || ""} onChange={(e) => set("usdtAddress", e.target.value)} placeholder="Wallet address" className={inputCls} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-white/60">Network</label>
+              <select value={form.usdtNetwork || ""} onChange={(e) => set("usdtNetwork", e.target.value)} className={inputCls}>
+                <option value="">Select network</option>
+                <option value="TRC20">TRC20</option>
+                <option value="ERC20">ERC20</option>
+                <option value="BEP20">BEP20</option>
+              </select>
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <label className="mb-1 block text-xs text-white/60">Account Holder Name</label>
+              <input value={form.bankAccountName || ""} onChange={(e) => set("bankAccountName", e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-white/60">Account Number</label>
+              <input value={form.bankAccountNumber || ""} onChange={(e) => set("bankAccountNumber", e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-white/60">Bank Name</label>
+              <input value={form.bankName || ""} onChange={(e) => set("bankName", e.target.value)} className={inputCls} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="mb-1 block text-xs text-white/60">IFSC</label>
+                <input value={form.bankIfsc || ""} onChange={(e) => set("bankIfsc", e.target.value)} className={inputCls} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-white/60">SWIFT</label>
+                <input value={form.bankSwift || ""} onChange={(e) => set("bankSwift", e.target.value)} className={inputCls} />
+              </div>
+            </div>
+          </>
+        )}
+
+        {err && <p className="text-xs text-red-400">{err}</p>}
+
+        <div className="flex gap-2 pt-1">
+          <Button className="flex-1" onClick={submit} disabled={busy || !quote}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Submit Withdrawal"}
+          </Button>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
