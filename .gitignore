@@ -99,3 +99,6 @@ fxincapapi/test-trade.mjs
 
 # Scratch credential file - an Infoway API key was committed here (see SECURITY.md)
 imp
+
+# Local DB credential scratch file - never commit
+.amitkaka.txt
