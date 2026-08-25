@@ -12,6 +12,7 @@ import {
 } from '../components/ui/table'
 import { useReactTable, getCoreRowModel, getPaginationRowModel, getSortedRowModel, flexRender } from '@tanstack/react-table'
 import { useAuth } from '../context/AuthContext'
+import { fileUrl } from '../lib/apiBase'
 
 const DOCUMENT_TYPE_LABELS = {
   aadhaar: 'Aadhaar Card',
@@ -74,14 +75,7 @@ export const UserKycStatus = () => {
   const [search, setSearch] = useState('')
   const [modalDoc, setModalDoc] = useState(null)
 
-  const apiBase = import.meta.env.VITE_API_BASE_URL || 'https://api.suimfx.com'
-
-  const buildFileUrl = (fileUrl) => {
-    if (!fileUrl) return null
-    if (fileUrl.startsWith('http')) return fileUrl
-    if (fileUrl.startsWith('/')) return `${apiBase}${fileUrl}`
-    return `${apiBase}/uploads/${fileUrl}`
-  }
+  const buildFileUrl = (url) => fileUrl(url)
 
   const fetchDocs = async () => {
     if (!token) return
@@ -90,7 +84,7 @@ export const UserKycStatus = () => {
     try {
       const params = new URLSearchParams({ limit: '100', page: '1' })
       if (search) params.set('search', search)
-      const res = await fetch(`${apiBase}/api/admin/kyc-documents?${params.toString()}`, {
+      const res = await fetch(`/api/admin/kyc-documents?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) {
@@ -123,7 +117,7 @@ export const UserKycStatus = () => {
 
   const updateStatus = async (id, action) => {
     try {
-      const res = await fetch(`${apiBase}/api/admin/kyc-documents/${id}/${action}`, {
+      const res = await fetch(`/api/admin/kyc-documents/${id}/${action}`, {
         method: 'PUT',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -176,7 +170,6 @@ export const UserKycStatus = () => {
       id: 'actions',
       cell: info => {
         const row = info.row.original
-        const fileUrl = buildFileUrl(row.fileUrl)
         return (
           <div className="flex gap-2">
             <button

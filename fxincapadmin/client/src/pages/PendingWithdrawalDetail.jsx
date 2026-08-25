@@ -27,8 +27,7 @@ export const PendingWithdrawalDetail = () => {
       setLoading(true)
       setError('')
       try {
-        const apiBase = import.meta.env.VITE_API_BASE_URL || 'https://api.suimfx.com'
-        const res = await fetch(`${apiBase}/api/admin/funds/${id}`, {
+        const res = await fetch(`/api/admin/funds/${id}`, {
           headers: { Authorization: `Bearer ${token}` },
         })
 
@@ -55,8 +54,7 @@ export const PendingWithdrawalDetail = () => {
 
     setActionLoading(true)
     try {
-      const apiBase = import.meta.env.VITE_API_BASE_URL || 'https://api.suimfx.com'
-      const res = await fetch(`${apiBase}/api/admin/funds/${id}/approve`, {
+      const res = await fetch(`/api/admin/funds/${id}/approve`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -85,8 +83,7 @@ export const PendingWithdrawalDetail = () => {
 
     setActionLoading(true)
     try {
-      const apiBase = import.meta.env.VITE_API_BASE_URL || 'https://api.suimfx.com'
-      const res = await fetch(`${apiBase}/api/admin/funds/${id}/reject`, {
+      const res = await fetch(`/api/admin/funds/${id}/reject`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
