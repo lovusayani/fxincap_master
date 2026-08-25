@@ -35,6 +35,8 @@ import { WithdrawalsReport } from './pages/WithdrawalsReport'
 import { DepositsReport } from './pages/DepositsReport'
 import { MamPam } from './pages/MamPam'
 import { PageSetting } from './pages/PageSetting'
+import { SupportTickets } from './pages/SupportTickets'
+import { SupportCategories } from './pages/SupportCategories'
 import { EmailSettings } from './pages/EmailSettings'
 import { TransactionsReport } from './pages/TransactionsReport'
 import { BalanceSheetReport } from './pages/BalanceSheetReport'
@@ -85,6 +87,8 @@ function App() {
             <Route path="server-settings" element={<ServerSettings />} />
             <Route path="miscellaneous-settings" element={<MiscellaneousSettings />} />
             <Route path="page-setting" element={<PageSetting />} />
+            <Route path="support/tickets" element={<SupportTickets />} />
+            <Route path="support/categories" element={<SupportCategories />} />
             <Route path="email-setting" element={<EmailSettings />} />
             <Route path="reports/transactions" element={<TransactionsReport />} />
             <Route path="reports/balance-sheet" element={<BalanceSheetReport />} />

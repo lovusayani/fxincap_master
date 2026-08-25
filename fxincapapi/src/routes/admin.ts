@@ -2913,6 +2913,101 @@ router.put("/ib/settings", verifyToken, async (req: AuthRequest, res: Response) 
 // ─────────────────────────────────────────────────────────────
 
 /** Per-method withdrawal charge rules (USDT / Bank). */
+// ── Support ─────────────────────────────────────────────────────────────────
+
+router.get("/support/categories", verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const { listCategories } = await import("../lib/support.js");
+    res.json({ success: true, data: await listCategories(false) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/support/categories", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { createCategory } = await import("../lib/support.js");
+    const name = String(req.body?.name || "").trim();
+    if (!name) return res.status(400).json({ success: false, error: "Name is required" });
+    res.json({ success: true, data: await createCategory(name, Number(req.body?.sortOrder) || 0) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.patch("/support/categories/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { updateCategory } = await import("../lib/support.js");
+    res.json({ success: true, data: await updateCategory(String(req.params.id), req.body || {}) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.delete("/support/categories/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { deleteCategory } = await import("../lib/support.js");
+    await deleteCategory(String(req.params.id));
+    res.json({ success: true, message: "Category deleted" });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/support/tickets", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { listTicketsForAdmin } = await import("../lib/support.js");
+    const data = await listTicketsForAdmin({
+      status: String(req.query.status || "").trim(),
+      category: String(req.query.category || "").trim(),
+      search: String(req.query.search || "").trim(),
+      limit: Number(req.query.limit) || 100,
+    });
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/support/tickets/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { getTicket } = await import("../lib/support.js");
+    const ticket = await getTicket(String(req.params.id));
+    if (!ticket) return res.status(404).json({ success: false, error: "Ticket not found" });
+    res.json({ success: true, data: ticket });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/support/tickets/:id/reply", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { addReply } = await import("../lib/support.js");
+    const message = String(req.body?.message || "").trim();
+    if (!message) return res.status(400).json({ success: false, error: "Message is required" });
+    const data = await addReply({
+      ticketId: String(req.params.id),
+      authorType: "admin",
+      authorId: req.user?.id || null,
+      authorName: "Support",
+      message,
+      newStatus: req.body?.status,
+    });
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.patch("/support/tickets/:id", verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { setTicketStatus } = await import("../lib/support.js");
+    res.json({ success: true, data: await setTicketStatus(String(req.params.id), String(req.body?.status || "")) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
 router.get("/withdrawal-fees", verifyToken, async (_req: AuthRequest, res: Response) => {
   try {
     const { getFeeRules } = await import("../lib/wallet.js");

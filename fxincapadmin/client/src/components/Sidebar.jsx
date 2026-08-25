@@ -197,8 +197,8 @@ const menus = [
   },
   {
     label: 'Support', icon: 'support_agent', children: [
-      { label: 'Tickets' },
-      { label: 'Requests' },
+      { label: 'Tickets', path: '/support/tickets' },
+      { label: 'Categories', path: '/support/categories' },
     ]
   },
   {
