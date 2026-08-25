@@ -15,7 +15,7 @@ const DB_KEY_REGION  = "mailgun_region";
 const envDefaults = (): EmailSettings => ({
   mailgunApiKey: String(process.env.MAILGUN_API_KEY || "").trim(),
   mailgunDomain: String(process.env.MAILGUN_DOMAIN  || "").trim(),
-  mailgunFrom:   String(process.env.MAILGUN_FROM     || "noreply@suimfx.com").trim(),
+  mailgunFrom:   String(process.env.MAILGUN_FROM     || "noreply@support.ncapfx.com").trim(),
   mailgunRegion: (String(process.env.MAILGUN_REGION || "us").trim().toLowerCase() === "eu" ? "eu" : "us"),
 });
 
@@ -25,7 +25,7 @@ export const getStoredEmailSettings = async (): Promise<EmailSettings> => {
   return {
     mailgunApiKey: db[DB_KEY_API_KEY] ?? env.mailgunApiKey,
     mailgunDomain: db[DB_KEY_DOMAIN] ?? env.mailgunDomain,
-    mailgunFrom:   db[DB_KEY_FROM] ?? (env.mailgunFrom || "noreply@suimfx.com"),
+    mailgunFrom:   db[DB_KEY_FROM] ?? (env.mailgunFrom || "noreply@support.ncapfx.com"),
     mailgunRegion: (db[DB_KEY_REGION] ?? env.mailgunRegion) === "eu" ? "eu" : "us",
   };
 };
@@ -37,7 +37,7 @@ export const saveStoredEmailSettings = async (
   const next: EmailSettings = {
     mailgunApiKey: String(settings.mailgunApiKey ?? current.mailgunApiKey ?? "").trim(),
     mailgunDomain: String(settings.mailgunDomain ?? current.mailgunDomain ?? "").trim(),
-    mailgunFrom:   String(settings.mailgunFrom   ?? current.mailgunFrom   ?? "noreply@suimfx.com").trim(),
+    mailgunFrom:   String(settings.mailgunFrom   ?? current.mailgunFrom   ?? "noreply@support.ncapfx.com").trim(),
     mailgunRegion: settings.mailgunRegion === "eu" || settings.mailgunRegion === "us"
       ? settings.mailgunRegion
       : current.mailgunRegion,

@@ -12,7 +12,7 @@ const getMailerConfig = async () => {
   const settings = await getStoredEmailSettings();
   const mailgunApiKey = String(settings.mailgunApiKey || "").trim();
   const mailgunDomain = String(settings.mailgunDomain || "").trim();
-  const mailgunFrom = String(settings.mailgunFrom || "noreply@suimfx.com").trim() || "noreply@suimfx.com";
+  const mailgunFrom = String(settings.mailgunFrom || "noreply@support.ncapfx.com").trim() || "noreply@support.ncapfx.com";
   const mailgunRegion = settings.mailgunRegion === "eu" ? "eu" : "us";
   const client = mailgunApiKey
     ? mailgun.client({

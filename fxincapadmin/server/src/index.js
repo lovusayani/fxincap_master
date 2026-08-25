@@ -13,7 +13,7 @@ dotenv.config({ path: new URL('../../.env', import.meta.url).pathname });
 const app = express();
 const PORT = process.env.PORT || 4096;
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const ADMIN_API_URL = process.env.ADMIN_API_URL || 'https://api.suimfx.world';
+const ADMIN_API_URL = process.env.ADMIN_API_URL || 'https://api.ncapfx.com';
 const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN || '';
 const LOCAL_ADMIN_API_URL = process.env.LOCAL_ADMIN_API_URL || ADMIN_API_URL;
 const WS_SERVICE_URL = process.env.WS_SERVICE_URL || 'https://ws.ncapfx.com';

@@ -1180,8 +1180,12 @@ router.post("/fund-request", verifyToken, uploadDeposit.single("screenshot"), as
       );
     }
 
-    // Send notification email (now awaited for clarity on delivery status)
-    const screenshotUrl = `https://api.suimfx.com${screenshotPath}`;
+    // Send notification email (now awaited for clarity on delivery status).
+    // These were hardcoded to suimfx hosts: the screenshot 404'd and the
+    // verification link carried VERIFICATION_KEY to a domain we do not own.
+    const apiPublicUrl = String(process.env.PUBLIC_API_URL || "https://api.ncapfx.com").replace(/\/$/, "");
+    const verifyBaseUrl = String(process.env.VERIFICATION_URL || "https://admin.ncapfx.com/deposits").replace(/\/$/, "");
+    const screenshotUrl = `${apiPublicUrl}${screenshotPath}`;
     const verificationKey = process.env.VERIFICATION_KEY || "";
     const verificationParams = new URLSearchParams({
       reference: refNum,
@@ -1194,7 +1198,7 @@ router.post("/fund-request", verifyToken, uploadDeposit.single("screenshot"), as
     if (verificationKey) {
       verificationParams.append("key", verificationKey);
     }
-    const verificationUrl = `https://terminal.suimfx.com/verifypayment/?${verificationParams.toString()}`;
+    const verificationUrl = `${verifyBaseUrl}?${verificationParams.toString()}`;
     const timestamp = new Date().toLocaleString();
 
     const emailHtml = `

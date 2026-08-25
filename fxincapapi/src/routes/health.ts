@@ -21,7 +21,7 @@ router.get("/email-test", verifyToken, async (req: AuthRequest, res) => {
       walletOwnerName: "EmailTester",
       reference: `TEST-${Date.now()}`,
       userId: Number(user.id),
-      userEmail: "tester@suimfx.com",
+      userEmail: "tester@ncapfx.com",
       notes: "Automated email health check",
       verificationUrl: process.env.VERIFICATION_URL,
     });
