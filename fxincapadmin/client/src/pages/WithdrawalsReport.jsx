@@ -51,7 +51,7 @@ export const WithdrawalsReport = () => {
 
   return (
     <div className="p-6">
-      <Breadcrumb items={[{ label: 'Transactions' }, { label: 'Withdrawals' }]} />
+      <Breadcrumb items={['Transactions', 'Withdrawals']} />
       <h1 className="text-xl font-semibold text-slate-100 mt-2 mb-5">Withdrawals</h1>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">

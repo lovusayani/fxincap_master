@@ -125,7 +125,7 @@ export const WithdrawalCharges = () => {
 
   return (
     <div className="p-6">
-      <Breadcrumb items={[{ label: 'Transactions' }, { label: 'Withdrawal Charges' }]} />
+      <Breadcrumb items={['Transactions', 'Withdrawal Charges']} />
       <h1 className="text-xl font-semibold text-slate-100 mt-2 mb-1">Withdrawal Charges</h1>
       <p className="text-sm text-slate-500 mb-6">
         Charges are deducted from the amount the trader withdraws. Each method can be priced and limited separately.
