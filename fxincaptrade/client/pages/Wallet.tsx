@@ -48,6 +48,7 @@ type TransferRow = { id: string; account_number?: string | null; amount: number;
 
 type FeeRule = {
   method: "usdt" | "bank";
+  network?: string;
   enabled: boolean;
   fee_type: "percent" | "fixed";
   fee_value: number;
@@ -371,7 +372,12 @@ function WithdrawModal({
   const [quote, setQuote] = useState<{ fee: number; net: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const rule = fees.find((f) => f.method === method);
+  // USDT charges differ per chain, so match the selected network and fall back
+  // to the method's network-less rule when none is chosen yet.
+  const rule =
+    fees.find((f) => f.method === method && (f.network || "") === (form.usdtNetwork || "")) ||
+    fees.find((f) => f.method === method && !f.network) ||
+    fees.find((f) => f.method === method);
 
   // Fee preview comes from the server so the trader never sees a figure the
   // backend would disagree with.
@@ -382,7 +388,7 @@ function WithdrawModal({
     const id = setTimeout(async () => {
       try {
         const res = await fetch(apiUrl("/api/user/wallet/quote"), {
-          method: "POST", headers: authH(), body: JSON.stringify({ method, amount: amt }),
+          method: "POST", headers: authH(), body: JSON.stringify({ method, amount: amt, usdtNetwork: form.usdtNetwork || undefined }),
         });
         const json = await res.json();
         if (!cancelled) {
@@ -392,7 +398,7 @@ function WithdrawModal({
       } catch { /* preview only */ }
     }, 300);
     return () => { cancelled = true; clearTimeout(id); };
-  }, [amount, method]);
+  }, [amount, method, form.usdtNetwork]);
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 

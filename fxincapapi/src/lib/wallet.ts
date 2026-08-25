@@ -31,6 +31,22 @@ async function run(conn: Executor | null, sql: string, values: any[] = []): Prom
 export type WithdrawalMethod = "usdt" | "bank";
 export const WITHDRAWAL_METHODS: WithdrawalMethod[] = ["usdt", "bank"];
 
+/**
+ * USDT settles on several chains whose transfer costs differ a lot, so each
+ * one carries its own charge. Methods without chains (bank) use the single
+ * network-less row, which also acts as the fallback for any USDT network that
+ * has no row of its own yet.
+ */
+export const USDT_NETWORKS = ["TRC20", "ERC20", "BEP20"] as const;
+export type UsdtNetwork = (typeof USDT_NETWORKS)[number];
+
+/** Normalises free-text network input to a stored key ('' for none). */
+export function normalizeNetwork(method: string, network?: string | null): string {
+  if (String(method).toLowerCase() !== "usdt") return "";
+  const up = String(network || "").trim().toUpperCase();
+  return (USDT_NETWORKS as readonly string[]).includes(up) ? up : "";
+}
+
 let schemaReady = false;
 
 /** Creates the wallet tables. Idempotent; only touches tables this role owns. */
@@ -81,13 +97,41 @@ export async function ensureWalletTables(): Promise<void> {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
-  // Seed both methods so the admin screen always has rows to edit. Zero fee by
-  // default: a made-up default charge would silently take money from traders.
+  // Charges became per-network for USDT. Widen the key in place rather than
+  // recreating the table so existing configured charges survive.
+  await query(`ALTER TABLE withdrawal_fee_settings ADD COLUMN IF NOT EXISTS network VARCHAR(20) NOT NULL DEFAULT ''`);
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'withdrawal_fee_settings_pkey'
+           AND (SELECT COUNT(*) FROM unnest(conkey)) = 1
+      ) THEN
+        ALTER TABLE withdrawal_fee_settings DROP CONSTRAINT withdrawal_fee_settings_pkey;
+        ALTER TABLE withdrawal_fee_settings ADD PRIMARY KEY (method, network);
+      END IF;
+    END $$;
+  `);
+
+  // Seed a network-less row per method (the fallback), then one row per USDT
+  // network. New network rows inherit whatever USDT is already charging, so
+  // enabling this feature does not silently change what traders are billed.
   for (const m of WITHDRAWAL_METHODS) {
     await query(
-      `INSERT INTO withdrawal_fee_settings (method, fee_type, fee_value)
-       VALUES ($1, 'percent', 0) ON CONFLICT (method) DO NOTHING`,
+      `INSERT INTO withdrawal_fee_settings (method, network, fee_type, fee_value)
+       VALUES ($1, '', 'percent', 0) ON CONFLICT (method, network) DO NOTHING`,
       [m]
+    );
+  }
+  for (const net of USDT_NETWORKS) {
+    await query(
+      `INSERT INTO withdrawal_fee_settings
+         (method, network, enabled, fee_type, fee_value, min_fee, max_fee, min_amount, max_amount)
+       SELECT 'usdt', $1, enabled, fee_type, fee_value, min_fee, max_fee, min_amount, max_amount
+         FROM withdrawal_fee_settings WHERE method = 'usdt' AND network = ''
+       ON CONFLICT (method, network) DO NOTHING`,
+      [net]
     );
   }
 
@@ -119,6 +163,8 @@ export async function ensureWalletTables(): Promise<void> {
 
 export interface FeeRule {
   method: WithdrawalMethod;
+  /** '' for methods without chains (bank), otherwise a USDT network. */
+  network: string;
   enabled: boolean;
   fee_type: "percent" | "fixed";
   fee_value: number;
@@ -131,6 +177,7 @@ export interface FeeRule {
 function toRule(row: any): FeeRule {
   return {
     method: row.method,
+    network: row.network || "",
     enabled: row.enabled !== false,
     fee_type: row.fee_type === "fixed" ? "fixed" : "percent",
     fee_value: Number(row.fee_value || 0),
@@ -143,25 +190,48 @@ function toRule(row: any): FeeRule {
 
 export async function getFeeRules(): Promise<FeeRule[]> {
   await ensureWalletTables();
-  const rows = await run(null, `SELECT * FROM withdrawal_fee_settings ORDER BY method`);
+  const rows = await run(null, `SELECT * FROM withdrawal_fee_settings ORDER BY method, network`);
   return rows.map(toRule);
 }
 
-export async function getFeeRule(method: WithdrawalMethod): Promise<FeeRule | null> {
+/**
+ * The charge for a method/network pair. Falls back to the method's
+ * network-less row so a chain we have not configured yet is still priced
+ * rather than failing the withdrawal.
+ */
+export async function getFeeRule(method: WithdrawalMethod, network?: string | null): Promise<FeeRule | null> {
   await ensureWalletTables();
-  const rows = await run(null, `SELECT * FROM withdrawal_fee_settings WHERE method = $1`, [method]);
+  const net = normalizeNetwork(method, network);
+  if (net) {
+    const exact = await run(
+      null,
+      `SELECT * FROM withdrawal_fee_settings WHERE method = $1 AND network = $2`,
+      [method, net]
+    );
+    if (exact.length) return toRule(exact[0]);
+  }
+  const rows = await run(
+    null,
+    `SELECT * FROM withdrawal_fee_settings WHERE method = $1 AND network = '' `,
+    [method]
+  );
   return rows.length ? toRule(rows[0]) : null;
 }
 
-export async function saveFeeRule(method: WithdrawalMethod, patch: Partial<FeeRule>): Promise<FeeRule | null> {
+export async function saveFeeRule(
+  method: WithdrawalMethod,
+  patch: Partial<FeeRule>,
+  network?: string | null
+): Promise<FeeRule | null> {
   await ensureWalletTables();
+  const net = normalizeNetwork(method, network ?? patch.network);
   const feeType = patch.fee_type === "fixed" ? "fixed" : "percent";
   await run(
     null,
     `UPDATE withdrawal_fee_settings
         SET enabled = $1, fee_type = $2, fee_value = $3, min_fee = $4,
             max_fee = $5, min_amount = $6, max_amount = $7, updated_at = NOW()
-      WHERE method = $8`,
+      WHERE method = $8 AND network = $9`,
     [
       patch.enabled !== false,
       feeType,
@@ -175,9 +245,10 @@ export async function saveFeeRule(method: WithdrawalMethod, patch: Partial<FeeRu
         ? null
         : Math.max(0, Number(patch.max_amount)),
       method,
+      net,
     ]
   );
-  return getFeeRule(method);
+  return getFeeRule(method, net);
 }
 
 const round2 = (n: number) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -204,7 +275,8 @@ export function quoteFee(rule: FeeRule, amount: number): FeeQuote {
     return { ok: false, error: "Enter a valid amount", gross: 0, fee: 0, net: 0 };
   }
   if (!rule.enabled) {
-    return { ok: false, error: `${rule.method.toUpperCase()} withdrawals are currently disabled`, gross, fee: 0, net: 0 };
+    const label = rule.network ? `${rule.method.toUpperCase()} (${rule.network})` : rule.method.toUpperCase();
+    return { ok: false, error: `${label} withdrawals are currently disabled`, gross, fee: 0, net: 0 };
   }
   if (gross < rule.min_amount) {
     return { ok: false, error: `Minimum withdrawal is ${rule.min_amount}`, gross, fee: 0, net: 0 };
@@ -396,7 +468,8 @@ export interface WithdrawResult {
 export async function submitWithdrawal(input: WithdrawInput): Promise<WithdrawResult> {
   await ensureWalletTables();
 
-  const rule = await getFeeRule(input.method);
+  // Price against the chain the trader actually chose, not the method average.
+  const rule = await getFeeRule(input.method, input.usdtNetwork);
   if (!rule) return { success: false, error: "Unknown withdrawal method" };
 
   const quote = quoteFee(rule, input.amount);

@@ -11,6 +11,16 @@ import { useAuth } from '../context/AuthContext'
 
 const METHOD_LABEL = { usdt: 'USDT (Crypto)', bank: 'Bank Account' }
 
+/** Title for one rule card: USDT rules are per chain, bank has a single rule. */
+const ruleTitle = (rule) => {
+  const base = METHOD_LABEL[rule.method] || rule.method
+  if (rule.method !== 'usdt') return base
+  return rule.network ? `USDT · ${rule.network}` : 'USDT · Default (other networks)'
+}
+
+/** Stable key/path segment for a rule. */
+const ruleKey = (rule) => `${rule.method}:${rule.network || ''}`
+
 const inputCls =
   'w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none'
 
@@ -27,7 +37,8 @@ function RuleCard({ rule, token, onSaved }) {
   const save = async () => {
     setSaving(true); setError(''); setSaved(false)
     try {
-      const res = await fetch(`/api/admin/withdrawal-fees/${rule.method}`, {
+      const path = rule.network ? `${rule.method}/${rule.network}` : rule.method
+      const res = await fetch(`/api/admin/withdrawal-fees/${path}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(form),
@@ -51,7 +62,7 @@ function RuleCard({ rule, token, onSaved }) {
   return (
     <Card className="p-5">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-slate-200">{METHOD_LABEL[rule.method] || rule.method}</h3>
+        <h3 className="text-sm font-semibold text-slate-200">{ruleTitle(rule)}</h3>
         <button
           onClick={() => set('enabled', !form.enabled)}
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${form.enabled ? 'bg-emerald-600' : 'bg-slate-700'}`}
@@ -128,7 +139,8 @@ export const WithdrawalCharges = () => {
       <Breadcrumb items={['Transactions', 'Withdrawal Charges']} />
       <h1 className="text-xl font-semibold text-slate-100 mt-2 mb-1">Withdrawal Charges</h1>
       <p className="text-sm text-slate-500 mb-6">
-        Charges are deducted from the amount the trader withdraws. Each method can be priced and limited separately.
+        Charges are deducted from the amount the trader withdraws. USDT is priced per network, since
+        transfer costs differ by chain. A network with no rule of its own falls back to the USDT default.
       </p>
 
       {loading ? (
@@ -137,7 +149,7 @@ export const WithdrawalCharges = () => {
         <div className="py-12 text-center text-rose-400 text-sm">{error}</div>
       ) : (
         <div className="grid gap-5 md:grid-cols-2 max-w-4xl">
-          {rules.map(r => <RuleCard key={r.method} rule={r} token={token} onSaved={load} />)}
+          {rules.map(r => <RuleCard key={ruleKey(r)} rule={r} token={token} onSaved={load} />)}
         </div>
       )}
     </div>

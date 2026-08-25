@@ -2922,14 +2922,24 @@ router.get("/withdrawal-fees", verifyToken, async (_req: AuthRequest, res: Respo
   }
 });
 
-router.put("/withdrawal-fees/:method", verifyToken, async (req: AuthRequest, res: Response) => {
+router.put("/withdrawal-fees/:method/:network?", verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { saveFeeRule, WITHDRAWAL_METHODS } = await import("../lib/wallet.js");
+    const { saveFeeRule, WITHDRAWAL_METHODS, USDT_NETWORKS } = await import("../lib/wallet.js");
     const method = String(req.params.method || "").toLowerCase();
     if (!(WITHDRAWAL_METHODS as string[]).includes(method)) {
       return res.status(400).json({ success: false, error: "Unknown withdrawal method" });
     }
-    const saved = await saveFeeRule(method as any, req.body || {});
+
+    // A network segment is only meaningful for USDT, and must be one we support.
+    const rawNetwork = String(req.params.network || req.body?.network || "").trim().toUpperCase();
+    if (rawNetwork && method !== "usdt") {
+      return res.status(400).json({ success: false, error: `${method} withdrawals have no network` });
+    }
+    if (rawNetwork && !(USDT_NETWORKS as readonly string[]).includes(rawNetwork)) {
+      return res.status(400).json({ success: false, error: `Unsupported network: ${rawNetwork}` });
+    }
+
+    const saved = await saveFeeRule(method as any, req.body || {}, rawNetwork);
     res.json({ success: true, message: "Charges saved", data: saved });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });

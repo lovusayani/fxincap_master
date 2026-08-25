@@ -153,10 +153,15 @@ router.post("/quote", verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const method = parseMethod(req.body?.method);
     if (!method) return res.status(400).json({ success: false, error: "Choose USDT or Bank" });
-    const rule = await getFeeRule(method);
+    // USDT is priced per chain, so the preview must use the selected network.
+    const rule = await getFeeRule(method, req.body?.usdtNetwork ?? req.body?.network);
     if (!rule) return res.status(400).json({ success: false, error: "Unknown withdrawal method" });
     const quote = quoteFee(rule, Number(req.body?.amount));
-    res.json({ success: quote.ok, error: quote.error, data: { gross: quote.gross, fee: quote.fee, net: quote.net } });
+    res.json({
+      success: quote.ok,
+      error: quote.error,
+      data: { gross: quote.gross, fee: quote.fee, net: quote.net, network: rule.network || null },
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
